@@ -1,0 +1,24 @@
+# MuseTalk V1.5 identity LoRA — video addendum Step 5 (optional; only if stock
+# MuseTalk doesn't lock onto the face). Small LoRA on the UNet inpainting head,
+# Milo's iterative template: small dataset, low LR, early-stop by epoch ~5.
+# Full SFT only if the LoRA plateaus. Trains on cloud H100, ~6-10 h ($12-20).
+model_name_or_path: TMElyralab/MuseTalk   # hub-ok: pulled once onto the cloud trainer
+finetuning_type: lora
+lora_target: unet
+lora_rank: 16
+lora_alpha: 32
+learning_rate: 5.0e-5
+num_train_epochs: 15
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+bf16: true
+attn_implementation: sdpa
+save_strategy: epoch
+early_stopping_patience: 3
+
+# dataset: 3-5 min varied speech, same setup as the identity reference video,
+# WhisperX-force-aligned (see scripts/record_corpus.md)
+dataset_dir: /workspace/corpus/video
+output_dir: /workspace/out/musetalk-identity-v1
+# Eval loop per Milo: synthesize a fixed prompt set after each epoch, human-judge,
+# early-stop on drift (v5 overfit at 1e-4, v6 underfit at 1e-5).
