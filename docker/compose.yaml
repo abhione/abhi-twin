@@ -1,0 +1,81 @@
+# AbhiTwin serving stack. Profiles: core (LLM+RAG+orchestrator), voice (TTS+STT),
+# video (MuseTalk). Memory limits ARE the spec §2 budget — do not raise them;
+# if something OOMs, drop the LLM to Qwen2.5-32B-NVFP4 (frees ~28 GB).
+name: abhi-twin
+
+x-twin-volumes: &twin-volumes
+  - /twin:/twin
+
+services:
+  llm:
+    build: {context: .., dockerfile: docker/llm.Dockerfile}
+    profiles: [core]
+    ports: ["8000:8000"]
+    volumes: *twin-volumes
+    gpus: all
+    mem_limit: 50g            # Qwen2.5-72B NVFP4 + KV cache headroom
+    environment:
+      - TWIN_LLM_MODEL_DIR=${TWIN_LLM_MODEL_DIR:-/twin/models/qwen2.5-72b-nvfp4}
+      - TWIN_PERSONA_ADAPTER=${TWIN_PERSONA_ADAPTER:-/twin/adapters/persona-v1}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 5s
+      start_period: 600s
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    profiles: [core]
+    ports: ["6333:6333"]
+    volumes:
+      - /twin/qdrant:/qdrant/storage
+    mem_limit: 4g             # Qdrant + BGE-M3 budget line (embeddings run in orchestrator)
+    restart: unless-stopped
+
+  orchestrator:
+    build: {context: .., dockerfile: docker/orchestrator.Dockerfile}
+    profiles: [core]
+    ports: ["8080:8080"]
+    volumes: *twin-volumes
+    gpus: all                 # BGE-M3 embeddings
+    mem_limit: 6g             # orchestrator + Ray + FastAPI + LiveKit line
+    environment:
+      - TWIN_SPARK_HOST=llm   # in-compose DNS; overridden for cross-host setups
+      - TWIN_LLM_URL=http://llm:8000/v1
+      - TWIN_TTS_URL=http://tts:8001/v1
+      - TWIN_STT_URL=http://stt:8003/v1
+      - QDRANT_HOST=qdrant
+    depends_on: [qdrant]
+    restart: unless-stopped
+
+  tts:
+    build: {context: .., dockerfile: docker/tts.Dockerfile}
+    profiles: [voice]
+    # 8002 is the streaming variant; same process serves both endpoints so the
+    # 5 GB model loads once
+    ports: ["8001:8001", "8002:8001"]
+    volumes: *twin-volumes
+    gpus: all
+    mem_limit: 5g             # Milo voice TTS budget line
+    restart: unless-stopped
+
+  stt:
+    build: {context: .., dockerfile: docker/stt.Dockerfile}
+    profiles: [voice]
+    ports: ["8003:8003"]
+    volumes: *twin-volumes
+    gpus: all
+    mem_limit: 4g             # Whisper large-v3-turbo budget line
+    restart: unless-stopped
+
+  musetalk:
+    build: {context: .., dockerfile: docker/musetalk.Dockerfile}
+    profiles: [video]
+    ports: ["8004:8004"]
+    volumes: *twin-volumes
+    gpus: all
+    mem_limit: 10g            # only paid while a video session is open (lazy load)
+    environment:
+      - TWIN_IDENTITY_VIDEO=${TWIN_IDENTITY_VIDEO:-/twin/corpus/video/identity.mp4}
+    restart: unless-stopped
