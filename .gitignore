@@ -1,0 +1,39 @@
+# --- secrets / env (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- twin data: corpus, checkpoints, models (privacy constraint #3) ---
+/twin/
+corpus/data/
+checkpoints/
+adapters/
+models/
+*.tar.gz
+chat.db
+*.mbox
+
+# --- media (raw recordings never leave the box) ---
+*.wav
+*.mp3
+*.m4a
+*.mov
+*.mp4
+
+# --- python ---
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# --- editor / os ---
+.DS_Store
+.idea/
+.vscode/
+.omc/
