@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir \
       fastapi uvicorn[standard] python-multipart httpx \
       langgraph openai qdrant-client FlagEmbedding
 
+# fail the BUILD (not first serve) if pip replaced the NGC torch with a CPU wheel
+# (FlagEmbedding's dep tree is the likeliest offender here)
+RUN python -c "import torch; assert torch.version.cuda, 'pip clobbered the NGC torch with a CPU build'"
+
 WORKDIR /app
 COPY ci/ ci/
 COPY serving/ serving/

@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir --pre vllm \
       --extra-index-url https://wheels.vllm.ai/nightly \
     && pip check | grep -v torch || true
 
+# fail the BUILD (not first serve) if pip replaced the NGC torch with a CPU wheel
+RUN python -c "import torch; assert torch.version.cuda, 'pip clobbered the NGC torch with a CPU build'"
+
 WORKDIR /app
 COPY ci/ ci/
 COPY serving/ serving/

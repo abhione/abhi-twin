@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir --no-deps faster-whisper \
     && pip install --no-cache-dir "tokenizers>=0.13" "onnxruntime<2" av tqdm \
        fastapi uvicorn[standard] python-multipart
 
+# fail the BUILD (not first serve) if pip replaced the NGC torch with a CPU wheel
+RUN python -c "import torch; assert torch.version.cuda, 'pip clobbered the NGC torch with a CPU build'"
+
 WORKDIR /app
 COPY ci/ ci/
 COPY serving/ serving/

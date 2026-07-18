@@ -5,6 +5,9 @@ FROM nvcr.io/nvidia/pytorch:25.11-py3
 # torch stays the NGC build; everything else is CPU-side plumbing
 RUN pip install --no-cache-dir fastapi uvicorn[standard] soundfile transformers accelerate
 
+# fail the BUILD (not first serve) if pip replaced the NGC torch with a CPU wheel
+RUN python -c "import torch; assert torch.version.cuda, 'pip clobbered the NGC torch with a CPU build'"
+
 WORKDIR /app
 COPY ci/ ci/
 COPY serving/ serving/

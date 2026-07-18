@@ -5,8 +5,9 @@ set -euo pipefail
 
 CONFIG="${1:?usage: launch_vast.sh <config.yaml> <artifact-name>}"
 NAME="${2:?usage: launch_vast.sh <config.yaml> <artifact-name>}"
-: "${VAST_API_KEY:?set VAST_API_KEY in .env}"
-: "${HF_TOKEN:?}" ; : "${HF_CORPUS_REPO:?}"
+: "${VAST_API_KEY:?set VAST_API_KEY in .env (cloud.vast.ai account settings)}"
+: "${HF_TOKEN:?set HF_TOKEN in .env (huggingface.co/settings/tokens)}"
+: "${HF_CORPUS_REPO:?set HF_CORPUS_REPO in .env}"
 IMAGE="${TRAIN_IMAGE:-ghcr.io/abhione/abhi-twin-train:latest}"
 
 command -v vastai >/dev/null || { echo "pip install vastai" >&2; exit 1; }

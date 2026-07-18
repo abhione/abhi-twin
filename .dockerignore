@@ -1,0 +1,10 @@
+# Build context is the repo root (compose.yaml: context ..). Whitelist only what
+# the Dockerfiles COPY — keeps .git/.venv/corpus data out of every build context
+# (privacy constraint #3 and multi-GB context uploads).
+*
+!ci/
+!serving/
+!training/
+!docker/patches/
+**/__pycache__/
+**/*.pyc

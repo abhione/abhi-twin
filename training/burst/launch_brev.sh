@@ -5,8 +5,9 @@ set -euo pipefail
 
 CONFIG="${1:?usage: launch_brev.sh <config.yaml> <artifact-name>}"
 NAME="${2:?usage: launch_brev.sh <config.yaml> <artifact-name>}"
-: "${HF_TOKEN:?set HF_TOKEN in .env}"
+: "${HF_TOKEN:?set HF_TOKEN in .env (huggingface.co/settings/tokens) — burst pulls the corpus + pushes the adapter through HF}"
 : "${HF_CORPUS_REPO:?set HF_CORPUS_REPO in .env}"
+: "${BREV_API_KEY:?set BREV_API_KEY in .env (brev.nvidia.com account settings) — or use launch_vast.sh}"
 INSTANCE="twin-train-$NAME"
 GPU="${BREV_GPU:-H100}"
 IMAGE="${TRAIN_IMAGE:-ghcr.io/abhione/abhi-twin-train:latest}"  # docker/train.Dockerfile
