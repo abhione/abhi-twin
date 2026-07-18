@@ -1,78 +1,93 @@
-# AbhiTwin — Day-1 Status (2026-07-17)
+# AbhiTwin — Status (updated 2026-07-17, Phase 1 complete)
 
-Day-1 bring-up is complete. Phase 0 verify gate and the full preflight pass on
-the Spark; both serving base images are pulled; the Mac-side test suite is
-green. Everything below is real command output (trimmed).
+Phase 0 (Spark bring-up) and Phase 1 (corpus) are done. All output below is
+real command output (trimmed).
 
-## Spark: `make verify-phase0` — ALL PASS (exit 0)
+## Phase 0 — Spark bring-up: COMPLETE
 
-```
-PASS  nvidia-smi
-PASS  GB10 GPU visible
-PASS  tailscale up
-PASS  docker
-PASS  nvidia container toolkit
-PASS  /twin/corpus exists
-PASS  /twin/checkpoints exists
-PASS  /twin/adapters exists
-PASS  /twin/models exists
-PASS  /twin/logs exists
-PASS  torch              CUDA ok, capability (12,1), torch 2.14.0.dev20260717+cu130 cuda 13.0
-PASS  torch cuda capability (12,1)
-=== verify-phase0: ALL CHECKS PASSED ===
-```
+`make verify-phase0` on the Spark: **ALL CHECKS PASSED** (nvidia-smi, GB10
+visible, tailscale, docker + nvidia toolkit, /twin dirs, torch CUDA capability
+`(12,1)`, torch 2.14.0.dev20260717+cu130). `ci/preflight.py`: 7 PASS, 1 PEND
+(onnxruntime intentionally lives in the musetalk image, v1.5). Serving base
+images pulled (`nvcr.io/nvidia/pytorch:25.11-py3`, `qdrant/qdrant:v1.12.4`).
+Details in git history (`89097af` and earlier).
 
-## Spark: `ci/preflight.py` (twin-venv) — 7 PASS, 1 PEND (exit 0)
+## Phase 1 — corpus v2: COMPLETE
 
-```
-PASS  epsilon-clamp      epsilon clamp floors zeros; log-mel finite; NaN detector fires
-PASS  local-files-only   every from_pretrained() uses local_files_only=True (or is marked # hub-ok)
-PASS  no-flash-attn      no flash_attn anywhere; SDPA it is
-PASS  configs            training configs encode the recipe gotchas
-PASS  torch              CUDA ok, capability (12,1), torch 2.14.0.dev20260717+cu130 cuda 13.0
-PASS  nvrtc              /usr/local/cuda/lib64/libnvrtc.so.12.8 present
-PEND  onnxruntime        onnxruntime not installed — sm_121 build runs in the musetalk image (video profile, v1.5); required only inside that container
-PASS  checkpoints        checkpoint configs are offline-safe
-```
+### Sources extracted (six; on this Mac)
 
-Notes:
-- `pyyaml` was installed into `~/twin-venv` (the `configs` check needed it).
-- onnxruntime is intentionally PEND on the host: the sm_121 source build ships
-  inside `docker/musetalk.Dockerfile` and is exercised by the video (v1.5)
-  profile, not the host venv. The check still hard-fails if ORT is present
-  without `CUDAExecutionProvider` (the silent-CPU-fallback gotcha).
+| source | items extracted |
+|---|---|
+| imessage | 116,838 |
+| hermes (agent sessions) | 1,630 |
+| openclaw (agent sessions) | 463 |
+| apple_notes | 347 |
+| github (PRs) | 177 |
+| agent_memory → `corpus/data/rag` | RAG facts stream (not persona pairs) |
 
-## Spark: docker images — both serving base images present
+Gmail Takeout and Slack export are absent (human-blocked, optional — see Next).
+
+### Pipeline (`corpus/build.py`, presidio engine)
+
+119,455 extracted → dedup −892 → presidio scrub (91,653 entity replacements)
+→ length filter −91,574 → promptless −1,849 → **25,140 pairs** → frozen
+holdout **1,256 eval / 23,884 train**. (PPL filter + prompt reconstruction
+deferred to the Spark rebuild — RUN ON SPARK markers in build.py.)
+
+`corpus/data/out` is now the canonical output dir (the stale five-source v1
+build was deleted; v2 renamed into place).
+
+### Verify gate — `python corpus/verify.py --out corpus/data/out`
 
 ```
-nvcr.io/nvidia/pytorch:25.11-py3  19.5GB
-qdrant/qdrant:v1.12.4             204MB
+PASS  25140 pairs (>= 8000)
+PASS  PII scrubbed (engine: presidio)
+PASS  holdout frozen + consistent (1256 eval pairs)
+=== verify-corpus: ALL CHECKS PASSED ===
 ```
 
-## Mac (starbase): `make test-local` — green
+### Privacy audit — evidence
+
+An audit grep over the built corpus found residuals presidio does not cover:
+13 shared-credential lines (`password: …` in messages), 1 AWS
+`AWSAccessKeyId=AKIA…` pre-signed URL (3 occurrences), 4 typo-domain emails
+(`.con`/`.calm`), 1 URL-encoded `tel:` dial-in. Fixed, not just reported: a
+residual scrub stage (`scrub_residuals` in `corpus/pipeline/pii.py`) now runs
+inside both PII engines on every build, and `corpus/rescrub.py` applied it to
+the built corpus in place (36 replacements; eval IDs untouched, so the
+holdout manifest still validates — see verify output above). Post-scrub audit:
 
 ```
-.venv/bin/ruff check .
-All checks passed!
-.venv/bin/python -m pytest
-76 passed in 0.74s
-.venv/bin/python ci/preflight.py --local-only
-PASS  epsilon-clamp / local-files-only / no-flash-attn / configs
+raw emails (non-placeholder)                      0
+US-format phone numbers                           0
+AKIA keys / bearer tokens / private key blocks    0 / 0 / 0
+credential values on a password:/key= line        0  (all are <CREDENTIAL>, decoded-text scan)
+placeholders present: <PERSON> 20,863  <PHONE_NUMBER> 418  <EMAIL_ADDRESS> 189  <CREDENTIAL> 29
 ```
 
-## Repo sync
+`git check-ignore corpus/data/out` → ignored (`.gitignore:10: corpus/data/`).
+Corpus data is not in git and never leaves the box unencrypted.
 
-Both machines on `main` @ `4e4c8c3`
-(`fix(preflight): onnxruntime absence is PEND not FAIL`).
+### Spark sync — confirmed
+
+Scrubbed corpus re-synced: `rsync corpus/data/out/ →
+abhione@spark-e9cb-2.local:/twin/corpus/out/` — 4 files present on the Spark
+(train.jsonl 13,291,041 B, eval.jsonl, stats.json, holdout.manifest.json),
+spot-check `grep -c AKIA… train.jsonl` → 0 on the Spark.
+
+### Mac test suite
+
+`make test-local`: ruff clean, **90 passed**, preflight local checks PASS.
 
 ## Next actions for Abhi (human-blocked)
 
-- [ ] `huggingface-cli login` on the Spark — required before any model
-      download (Qwen 72B NVFP4, BGE-M3, TTS base).
-- [ ] Put the Brev API key into `.env` on the Mac (never committed) — needed
-      for cloud-burst training (`training/burst/`). Vast key optional fallback.
-- [ ] Corpus recording session: follow `scripts/record_corpus.md`
-      (mic setup, Harvard sentences, identity video shot list).
-- [ ] Then run `twin corpus --local` on the Mac to extract + clean the text
-      corpus (iMessage, Apple Notes, Gmail Takeout, GitHub PRs) and rsync it
-      to the Spark.
+- [ ] `huggingface-cli login` on the Spark — required before model downloads
+      (Qwen 72B NVFP4, BGE-M3, TTS base).
+- [ ] Brev API key into `.env` on the Mac (copy `.env.example`; the CLI
+      auto-loads it — `TWIN_SPARK_HOST` is already set to the real hostname).
+- [ ] Optional: Gmail Takeout download → `twin corpus --local --mbox …` adds
+      Abhi's long-form mail voice to the corpus (then rebuild + re-sync).
+- [ ] Voice recording session per `scripts/record_corpus.md` (mic setup,
+      Harvard sentences, identity video shot list) — feeds Phase 3.
+- [ ] Then Phase 2: `twin train persona` (persona LoRA cloud-burst on Brev,
+      config `training/configs/persona-lora.yaml`).
