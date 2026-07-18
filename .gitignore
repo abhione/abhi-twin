@@ -37,3 +37,6 @@ dist/
 .idea/
 .vscode/
 .omc/
+
+# mission briefs (session-local, never committed)
+MISSION-*.md
