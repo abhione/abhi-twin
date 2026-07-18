@@ -18,6 +18,7 @@ from serving.rag.chunking import chunk_text
 
 COLLECTION = "brain"
 EMBED_DIM = 1024  # BGE-M3 dense
+UPSERT_BATCH = 128
 
 
 def load_chunks(path: Path) -> list[tuple[str, dict]]:
@@ -46,7 +47,10 @@ def _clients():
     from qdrant_client.models import Distance, VectorParams
 
     host = os.environ.get("QDRANT_HOST", "localhost")
-    qdrant = QdrantClient(host=host, port=int(os.environ.get("QDRANT_PORT", 6333)))
+    # generous timeout: a batch of 1024-dim vectors is a multi-MB REST payload
+    qdrant = QdrantClient(
+        host=host, port=int(os.environ.get("QDRANT_PORT", 6333)), timeout=60
+    )
     model = BGEM3FlagModel("/twin/models/bge-m3", use_fp16=True)
     return qdrant, model, Distance, VectorParams
 
@@ -68,17 +72,17 @@ def main(source: Path, collection: str, pattern: str) -> None:
         if not pairs:
             continue
         vectors = model.encode([text for text, _ in pairs])["dense_vecs"]
-        qdrant.upsert(
-            collection,
-            points=[
-                {
-                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{path}#{i}")),
-                    "vector": vec.tolist(),
-                    "payload": {"text": text, "path": str(path), "chunk": i, **extra},
-                }
-                for i, ((text, extra), vec) in enumerate(zip(pairs, vectors))
-            ],
-        )
+        points = [
+            {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{path}#{i}")),
+                "vector": vec.tolist(),
+                "payload": {"text": text, "path": str(path), "chunk": i, **extra},
+            }
+            for i, ((text, extra), vec) in enumerate(zip(pairs, vectors))
+        ]
+        # batched upserts: one giant call (1,888 facts ≈ 40 MB JSON) times out
+        for start in range(0, len(points), UPSERT_BATCH):
+            qdrant.upsert(collection, points=points[start : start + UPSERT_BATCH])
         total += len(pairs)
         click.echo(f"indexed {path} ({len(pairs)} chunks)")
     click.echo(f"OK: {total} chunks in collection {collection!r}")
