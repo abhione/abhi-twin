@@ -27,6 +27,56 @@ _REGEX_ENTITIES = [
     ("IP_ADDRESS", _IP),
 ]
 
+# Residual pass, applied AFTER the engine (presidio or regex): shared secrets
+# presidio has no recognizers for, plus email/phone leftovers presidio misses
+# (typo TLDs like .con/.calm, Teams GUID addresses). Real-corpus audit findings.
+# [^\S\n] = whitespace that is not a newline (covers \xa0; never crosses lines,
+# so "choose a new password:\n<prose>" stays untouched)
+_PASSWORD_VALUE = re.compile(
+    r"(?i)\b(password|passwd|pwd)([^\S\n]*[:=][^\S\n]*)(?!<CREDENTIAL>)(\S+)"
+)
+_KEY_ASSIGN = re.compile(
+    r"(?i)\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)"
+    r"([^\S\n]*[:=][^\S\n]*)(?!<CREDENTIAL>)(\S+)"
+)
+_TEL_URI = re.compile(r"(?i)\btel:[+%;0-9.()-]{7,}")  # URL-encoded dial-ins
+_AWS_ACCESS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{20,}\b")
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+)
+
+
+def scrub_residuals(text: str) -> tuple[str, dict[str, int]]:
+    """Replace shared secrets + leftover email/phone. Replace, never delete."""
+    counts: dict[str, int] = {}
+
+    def count(entity: str, n: int) -> None:
+        if n:
+            counts[entity] = counts.get(entity, 0) + n
+
+    text, n = _PRIVATE_KEY_BLOCK.subn("<PRIVATE_KEY>", text)
+    count("CREDENTIAL", n)
+    for pattern in (_PASSWORD_VALUE, _KEY_ASSIGN):
+        text, n = pattern.subn(r"\1\2<CREDENTIAL>", text)
+        count("CREDENTIAL", n)
+    text, n = _AWS_ACCESS_KEY.subn("<CREDENTIAL>", text)
+    count("CREDENTIAL", n)
+    text, n = _BEARER_TOKEN.subn("Bearer <CREDENTIAL>", text)
+    count("CREDENTIAL", n)
+    text, n = _EMAIL.subn("<EMAIL_ADDRESS>", text)
+    count("EMAIL_ADDRESS", n)
+    for pattern in (_PHONE, _TEL_URI):
+        text, n = pattern.subn("<PHONE_NUMBER>", text)
+        count("PHONE_NUMBER", n)
+    return text, counts
+
+
+def _merge(counts: dict[str, int], extra: dict[str, int]) -> dict[str, int]:
+    for k, v in extra.items():
+        counts[k] = counts.get(k, 0) + v
+    return counts
+
 
 class RegexScrubber:
     name = "regex"
@@ -37,7 +87,8 @@ class RegexScrubber:
             text, n = pattern.subn(f"<{entity}>", text)
             if n:
                 counts[entity] = counts.get(entity, 0) + n
-        return text, counts
+        text, residual = scrub_residuals(text)
+        return text, _merge(counts, residual)
 
 
 class PresidioScrubber:
@@ -73,7 +124,8 @@ class PresidioScrubber:
         scrubbed = self._anonymizer.anonymize(
             text=text, analyzer_results=results, operators=self._operators
         ).text
-        return scrubbed, counts
+        scrubbed, residual = scrub_residuals(scrubbed)
+        return scrubbed, _merge(counts, residual)
 
 
 def get_scrubber(engine: str = "presidio"):
