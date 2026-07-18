@@ -95,7 +95,7 @@ docker images   # abhi-twin-{llm,orchestrator,stt,tts} appear as they finish
 | tts | `/twin/logs/build-tts.log` | **BUILT** (`abhi-twin-tts`) in <1 min — pip-only layer |
 | orchestrator | `/twin/logs/build-orchestrator.log` | **BUILT** (`abhi-twin-orchestrator`) ~2 min; torch guard passed (FlagEmbedding did not clobber NGC torch) |
 | llm | `/twin/logs/build-llm.log` | **BUILT** (`abhi-twin-llm`) ~5 min — vLLM nightly cu130 aarch64 wheel resolved cleanly, no source build needed |
-| stt | `/twin/logs/build-stt.log` | **IN PROGRESS** (3rd launch 02:41 PDT) — CTranslate2 source compile for sm_121 running, expect up to a few hours. Two real bugs found + fixed en route, see below |
+| stt | `/twin/logs/build-stt.log` | **BUILT** (`abhi-twin-stt`) — the feared CTranslate2 source compile for sm_121 took only ~6 min at `-j20` on the GB10. Two real bugs found + fixed en route, see below |
 
 stt needed two rounds of fixes (`ede6a41`, `ea10081`), both now first-class in
 the Dockerfile: (1) CTranslate2 selects CUDA archs via legacy FindCUDA, which
@@ -105,9 +105,12 @@ parses numeric archs with a single-digit-major regex, so `CUDA_ARCH_LIST=12.1`
 is rejected as an unknown architecture *name*. Fix: sed the
 `cuda_select_nvcc_arch_flags` call into explicit
 `-gencode arch=compute_121,code=sm_121`, grep-guarded against upstream drift.
-Verified in-log: `NVCC compilation flags: …;-gencode;arch=compute_121,code=sm_121`
-and CUDA objects compiling. If it dies later, check the log tail and relaunch —
-BuildKit caches all layers before the compile.
+Verified in-log: `NVCC compilation flags: …;-gencode;arch=compute_121,code=sm_121`,
+then `Image abhi-twin-stt Built`. **All four serving images now exist on the
+Spark** (`docker images | grep abhi-twin`); runtime CUDA-capability checks
+happen at container start via `ci/preflight.py`. `make serve` /
+`make serve-voice` become runnable once model weights land in `/twin/models`
+(blocked on HF login).
 
 Skipped: **musetalk** (v1.5 scope), **train** image (cloud-burst only, needs
 registry push — pointless without HF/Brev creds). No model weights are needed at
