@@ -19,6 +19,21 @@ from pathlib import Path
 import click
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def _load_env(path: Path) -> None:
+    """Load KEY=VALUE lines from .env (real env wins; no quoting/expansion)."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env(REPO / ".env")
 SPARK_HOST = os.environ.get("TWIN_SPARK_HOST", "spark")
 
 

@@ -9,7 +9,8 @@ and [docs/twin_video_addendum_v2.md](docs/twin_video_addendum_v2.md).
 
 ```bash
 git clone <this repo> && cd abhi-twin
-cp .env.example .env            # fill in HF/Brev/Vast keys
+cp .env.example .env            # fill in HF/Brev/Vast keys; sets TWIN_SPARK_HOST
+                                # (cli/twin.py auto-loads .env — no need to export)
 make test-local                 # mac: unit tests + local preflight (no GPU needed)
 
 # on the Spark (over Tailscale):
