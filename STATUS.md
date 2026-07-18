@@ -1,4 +1,4 @@
-# AbhiTwin — Status (updated 2026-07-17, Phase 1 complete)
+# AbhiTwin — Status (updated 2026-07-18, serving-stack builds launched)
 
 Phase 0 (Spark bring-up) and Phase 1 (corpus) are done. All output below is
 real command output (trimmed).
@@ -78,6 +78,57 @@ spot-check `grep -c AKIA… train.jsonl` → 0 on the Spark.
 ### Mac test suite
 
 `make test-local`: ruff clean, **90 passed**, preflight local checks PASS.
+
+## Serving stack build — LAUNCHED 2026-07-18 02:36 PDT (detached on the Spark)
+
+All four buildable images launched via `docker compose build` (tags match what
+`make serve` expects), each as a detached `nohup` on the Spark so they survive
+session loss. Check progress any time:
+
+```
+ssh abhione@spark-e9cb-2.local 'tail -f /twin/logs/build-*.log'
+docker images   # abhi-twin-{llm,orchestrator,stt,tts} appear as they finish
+```
+
+| image | log | state at launch + expected pain points |
+|---|---|---|
+| tts | `/twin/logs/build-tts.log` | **DONE** in <1 min (pip-only layer) |
+| orchestrator | `/twin/logs/build-orchestrator.log` | started; FlagEmbedding dep tree is heavy but binary-only |
+| llm | `/twin/logs/build-llm.log` | started; vLLM nightly cu130 aarch64 wheel — if the wheel resolve fails, fall back to source build (spec §4) |
+| stt | `/twin/logs/build-stt.log` | started; **CTranslate2 v4.7.2 source build for sm_121 — expect hours**, tag verified to exist |
+
+Skipped: **musetalk** (v1.5 scope), **train** image (cloud-burst only, needs
+registry push — pointless without HF/Brev creds). No model weights are needed at
+build time; all four images load weights from `/twin` at runtime, so no HF auth
+was required.
+
+Hardening landed with the launch (`a9bd0c4`): every Dockerfile now asserts
+`torch.version.cuda` at **build** time (a pip-clobbered CPU torch fails the
+build, not the first serve), and a new `.dockerignore` whitelists only
+`ci/ serving/ training/ docker/patches/` so the repo-root build context ships no
+`.git`/`.venv`/corpus data.
+
+### RAG ingest — launched detached alongside the builds
+
+`corpus/data/rag/rag_facts.jsonl` (1,888 hermes-mem facts, 1.5 MB) rsynced to
+`/twin/corpus/rag/`. `serving/rag/ingest.py` now indexes `.jsonl` as one point
+per pre-chunked fact (id/source/kind payload) instead of prose-chunking raw
+JSON. `scripts/spark_rag_ingest.sh` (idempotent) runs detached: starts qdrant
+(`twin-qdrant`, same image + `/twin/qdrant` volume as compose), snapshots
+**ungated** `BAAI/bge-m3` into `/twin/models/bge-m3`, ingests into the `brain`
+collection, then curls the collection as a spot-check. Log:
+`/twin/logs/rag-ingest.log`.
+
+### Phase-2 readiness (audit only — no burst launched)
+
+`training/burst/launch_brev.sh` now fails fast with actionable messages on all
+three prerequisites: `HF_TOKEN`, `HF_CORPUS_REPO`, and `BREV_API_KEY` (the
+latter was previously unchecked — the script would have burned a Brev create
+before failing). `launch_vast.sh` guards got real messages too. `.env.example`
+documents every variable both scripts read (`HF_TOKEN`, `HF_CORPUS_REPO`,
+`BREV_API_KEY`, `BREV_ORG`, `VAST_API_KEY`, optional `BREV_GPU`/`TRAIN_IMAGE`
+have sane defaults). `persona-lora.yaml` unchanged. Verdict: **ready to launch
+the moment HF token + Brev key land in `.env`** — `make train-persona`.
 
 ## Next actions for Abhi (human-blocked)
 
