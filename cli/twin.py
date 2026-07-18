@@ -65,11 +65,18 @@ def phase0() -> None:
               help="apple-notes-liberator output")
 @click.option("--imessage/--no-imessage", "imessage_", default=True)
 @click.option("--github/--no-github", "github_", default=True)
+@click.option("--hermes/--no-hermes", "hermes_", default=True,
+              help="Hermes agent sessions (~/.hermes/state.db)")
+@click.option("--openclaw/--no-openclaw", "openclaw_", default=True,
+              help="OpenClaw/Enigma session transcripts (~/.openclaw/agents)")
+@click.option("--agent-memory/--no-agent-memory", "agent_memory_", default=True,
+              help="hermes-mem facts -> corpus/data/rag (RAG stream, not persona pairs)")
 @click.option("--pii-engine", type=click.Choice(["presidio", "regex", "auto"]),
               default="presidio")
 @click.option("--allow-regex-pii", is_flag=True)
 def corpus(local_: bool, sync_: bool, mbox: Path | None, slack_export: Path | None,
-           notes_json: Path | None, imessage_: bool, github_: bool,
+           notes_json: Path | None, imessage_: bool, github_: bool, hermes_: bool,
+           openclaw_: bool, agent_memory_: bool,
            pii_engine: str, allow_regex_pii: bool) -> None:
     """[mac] Phase 1: run every extractor whose input exists, then build.py."""
     if sync_:
@@ -101,6 +108,15 @@ def corpus(local_: bool, sync_: bool, mbox: Path | None, slack_export: Path | No
     if github_ and shutil.which("gh"):
         sh([py, "-m", "corpus.extractors.github_prs"])
         ran.append("github")
+    if hermes_ and (Path.home() / ".hermes/state.db").exists():
+        sh([py, "-m", "corpus.extractors.hermes_sessions"])
+        ran.append("hermes")
+    if openclaw_ and (Path.home() / ".openclaw/agents").is_dir():
+        sh([py, "-m", "corpus.extractors.openclaw_sessions"])
+        ran.append("openclaw")
+    if agent_memory_ and (Path.home() / ".hermes/hermes-mem.db").exists():
+        sh([py, "-m", "corpus.extractors.agent_memory"])
+        ran.append("agent_memory (rag stream)")
     if not ran:
         raise click.ClickException(
             "no sources available — pass --mbox/--slack-export/--notes-json, or enable "

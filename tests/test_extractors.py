@@ -3,7 +3,17 @@ import mailbox
 import sqlite3
 from email.message import EmailMessage
 
-from corpus.extractors import apple_notes, github_prs, gmail_takeout, imessage, slack
+from corpus.extractors import (
+    agent_memory,
+    apple_notes,
+    common,
+    github_prs,
+    gmail_takeout,
+    hermes_sessions,
+    imessage,
+    openclaw_sessions,
+    slack,
+)
 
 ME = "abhi@sequoiadigital.io"
 LONG_BODY = (
@@ -224,3 +234,210 @@ def test_github_prs_and_commit_bodies():
     assert {k for k, _ in kinds} == {"pr", "commit"}
     commit = next(r for r in records if r.meta["kind"] == "commit")
     assert "subject line" not in commit.reply  # body only, subject dropped
+
+
+# ------------------------------------------------------------------ hermes
+
+
+def _hermes_db(tmp_path, rows):
+    path = tmp_path / "state.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+            content TEXT, timestamp REAL, active INTEGER DEFAULT 1);
+        """
+    )
+    conn.executemany(
+        "INSERT INTO messages (id, session_id, role, content, timestamp, active) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_hermes_pairs_user_reply_with_assistant_context(tmp_path):
+    db = _hermes_db(
+        tmp_path,
+        [
+            (1, "s1", "assistant", "Deployed the demo app, want me to continue?", 1.0, 1),
+            (2, "s1", "user", "Yes. And then continue the build", 2.0, 1),
+            (3, "s1", "tool", "{}", 2.5, 1),
+            (4, "s1", "assistant", "Done. Anything else?", 3.0, 1),
+            (5, "s1", "user", "[IMPORTANT: Background process proc_1 completed]", 4.0, 1),
+            (6, "s2", "user", "Use pnpm not npm for this project", 5.0, 1),
+            (7, "s2", "user", "x" * 3000, 6.0, 1),
+            (8, "s2", "user", "inactive row", 7.0, 0),
+        ],
+    )
+    records, filtered = hermes_sessions.extract(db)
+    assert len(records) == 2
+    assert records[0].source == "hermes"
+    assert records[0].reply == "Yes. And then continue the build"
+    assert "Deployed the demo app" in records[0].prompt
+    assert records[0].meta["session_id"] == "s1"
+    assert records[1].reply == "Use pnpm not npm for this project"
+    assert records[1].prompt is None
+    assert filtered == 2  # the [IMPORTANT:...] harness turn + the 3000-char dump
+
+
+def test_looks_like_pasted_heuristics():
+    assert common.looks_like_pasted("```python\nprint('hi')\n```")
+    assert common.looks_like_pasted("A" * 2001)
+    assert common.looks_like_pasted('{"key": "value", ' + '"x": 1, ' * 20 + '"end": 0}')
+    assert common.looks_like_pasted("QUJD" * 100)  # base64 run
+    assert common.looks_like_pasted("[Subagent Context] do the thing")
+    assert not common.looks_like_pasted("Ship it — but rename the flag to --local first.")
+
+
+# ------------------------------------------------------------------ openclaw
+
+
+def _openclaw_session(tmp_path, agent, name, lines):
+    d = tmp_path / "agents" / agent / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{name}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _msg(role, text, ts="2026-07-11T14:32:30Z"):
+    return json.dumps(
+        {"type": "message", "id": "x", "timestamp": ts,
+         "message": {"role": role, "timestamp": ts,
+                     "content": [{"type": "text", "text": text}]}}
+    )
+
+
+def test_openclaw_walks_agents_and_skips_malformed(tmp_path):
+    _openclaw_session(
+        tmp_path, "main", "sess-a",
+        [
+            json.dumps({"type": "session", "version": 3, "id": "sess-a"}),
+            _msg("assistant", "Here is the plan for the demo."),
+            _msg("user", "Looks good, but use Fly.io instead of Vercel"),
+            "this is not json {{{",
+            _msg("user", "[Subagent Context] synthetic harness turn"),
+        ],
+    )
+    _openclaw_session(
+        tmp_path, "meg", "sess-b",
+        [_msg("user", "Summarize my week from the meeting notes")],
+    )
+    # trajectory sidecars must be ignored
+    _openclaw_session(tmp_path, "main", "sess-a.trajectory", ["not even json"])
+
+    records, filtered, malformed = openclaw_sessions.extract(tmp_path / "agents")
+    assert len(records) == 2
+    by_agent = {r.meta["agent"]: r for r in records}
+    assert by_agent["main"].reply == "Looks good, but use Fly.io instead of Vercel"
+    assert "plan for the demo" in by_agent["main"].prompt
+    assert by_agent["meg"].reply == "Summarize my week from the meeting notes"
+    assert all(r.source == "openclaw" for r in records)
+    assert filtered == 1 and malformed == 1
+
+
+def test_openclaw_string_content_and_tool_blocks(tmp_path):
+    _openclaw_session(
+        tmp_path, "beta", "sess-c",
+        [
+            json.dumps({"type": "message", "message": {
+                "role": "user", "content": "plain string content works too"}}),
+            json.dumps({"type": "message", "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "output": "ignored"}]}}),
+        ],
+    )
+    records, _filtered, malformed = openclaw_sessions.extract(tmp_path / "agents")
+    assert [r.reply for r in records] == ["plain string content works too"]
+    assert malformed == 0
+
+
+# ------------------------------------------------------------------ agent memory
+
+
+def _mem_db(tmp_path):
+    path = tmp_path / "hermes-mem.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE observations (id TEXT PRIMARY KEY, session_id TEXT,
+            timestamp TEXT, type TEXT, title TEXT, narrative TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]', concepts TEXT DEFAULT '[]');
+        CREATE TABLE session_summaries (id TEXT PRIMARY KEY, session_id TEXT,
+            timestamp TEXT, request TEXT DEFAULT '', investigated TEXT DEFAULT '',
+            learned TEXT DEFAULT '', completed TEXT DEFAULT '',
+            next_steps TEXT DEFAULT '', notes TEXT DEFAULT '');
+        """
+    )
+    conn.execute(
+        "INSERT INTO observations VALUES ('o1', 's1', '2026-07-01T00:00:00Z', "
+        "'feature', 'Abhi prefers pnpm', 'Confirmed across projects.', "
+        "'[\"uses pnpm everywhere\"]', '[\"tooling\"]')"
+    )
+    conn.execute(
+        "INSERT INTO observations VALUES ('o2', 's1', '2026-07-01T00:01:00Z', "
+        "'feature', '', '', '[]', '[]')"
+    )
+    conn.execute(
+        "INSERT INTO session_summaries VALUES ('m1', 's1', '2026-07-01T01:00:00Z', "
+        "'build the twin', '', 'sm_121 needs source builds', 'phase0 done', '', '')"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_agent_memory_routes_to_rag_stream(tmp_path):
+    facts = agent_memory.extract(_mem_db(tmp_path))
+    assert len(facts) == 2  # empty observation dropped
+    obs = next(f for f in facts if f["kind"] == "observation")
+    summ = next(f for f in facts if f["kind"] == "session_summary")
+    assert all(f["stream"] == "rag" and f["source"] == "hermes-mem" for f in facts)
+    assert "Abhi prefers pnpm" in obs["text"]
+    assert "uses pnpm everywhere" in obs["text"]
+    assert obs["meta"]["concepts"] == ["tooling"]
+    assert "learned: sm_121 needs source builds" in summ["text"]
+
+    out = tmp_path / "rag" / "rag_facts.jsonl"
+    assert agent_memory.write_facts(out, facts) == 2
+    lines = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [f["kind"] for f in lines] == ["observation", "session_summary"]
+
+
+def test_openclaw_unwraps_gateway_metadata_and_drops_harness_turns(tmp_path):
+    wrapped = (
+        'Conversation info (untrusted metadata):\n```json\n{\n  "sender": "Abhi B"\n}\n```\n\n'
+        'Sender (untrusted metadata):\n```json\n{\n  "id": "833"\n}\n```\n\n'
+        "Spawn a subagent to audit the gateway disconnects."
+    )
+    _openclaw_session(
+        tmp_path, "main", "sess-d",
+        [
+            _msg("user", wrapped),
+            _msg("user", "Pre-compaction memory flush. Store durable memories now."),
+            _msg("user", "HEARTBEAT"),
+            _msg("user", "System: node restarted"),
+        ],
+    )
+    records, filtered, _malformed = openclaw_sessions.extract(tmp_path / "agents")
+    assert [r.reply for r in records] == ["Spawn a subagent to audit the gateway disconnects."]
+    assert filtered == 3
+
+
+def test_agent_turns_with_credentials_are_dropped(tmp_path):
+    db = _hermes_db(
+        tmp_path,
+        [
+            (1, "s1", "user", "login with abhi@x.io and password Hunter2@x then continue", 1.0, 1),
+            (2, "s1", "user", "Now wire the extractor into the CLI like the others", 2.0, 1),
+        ],
+    )
+    records, filtered = hermes_sessions.extract(db)
+    assert [r.reply for r in records] == ["Now wire the extractor into the CLI like the others"]
+    assert filtered == 1
+    assert common.contains_secret("here's the key: -----BEGIN RSA PRIVATE KEY-----")
+    assert common.contains_secret("use Bearer abcdef1234567890abcdef")
+    assert not common.contains_secret("reset your password via the normal flow")

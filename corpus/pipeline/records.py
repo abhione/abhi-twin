@@ -14,7 +14,7 @@ class Record:
     counterpart message, or None when it must be reconstructed synthetically."""
 
     id: str
-    source: str  # gmail | imessage | slack | apple_notes | github | brain | manual
+    source: str  # gmail | imessage | slack | apple_notes | github | hermes | openclaw | brain | manual
     reply: str
     prompt: str | None = None
     meta: dict = dataclasses.field(default_factory=dict)

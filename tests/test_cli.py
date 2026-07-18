@@ -1,5 +1,6 @@
 import mailbox
 from email.message import EmailMessage
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -58,6 +59,7 @@ def test_corpus_local_end_to_end(tmp_path, monkeypatch):
     result = CliRunner().invoke(
         main,
         ["corpus", "--local", "--mbox", str(mbox_path), "--no-imessage", "--no-github",
+         "--no-hermes", "--no-openclaw", "--no-agent-memory",
          "--pii-engine", "regex", "--allow-regex-pii"],
         catch_exceptions=False,
     )
@@ -70,6 +72,9 @@ def test_corpus_local_end_to_end(tmp_path, monkeypatch):
 def test_corpus_local_no_sources_errors(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("cli.twin.shutil.which", lambda _: None)
-    result = CliRunner().invoke(main, ["corpus", "--local", "--no-imessage", "--no-github"])
+    # real ~/Library + ~/.hermes + ~/.openclaw must not auto-detect in tests
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    result = CliRunner().invoke(main, ["corpus", "--local", "--no-imessage", "--no-github",
+                                     "--no-hermes", "--no-openclaw", "--no-agent-memory"])
     assert result.exit_code != 0
     assert "no sources available" in result.output
