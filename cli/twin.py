@@ -91,8 +91,12 @@ def corpus(local_: bool, sync_: bool, mbox: Path | None, slack_export: Path | No
     if slack_export:
         sh([py, "-m", "corpus.extractors.slack", "--export", str(slack_export)])
         ran.append("slack")
+    notestore = Path.home() / "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
     if notes_json:
         sh([py, "-m", "corpus.extractors.apple_notes", "--input", str(notes_json)])
+        ran.append("apple_notes")
+    elif notestore.exists():
+        sh([py, "-m", "corpus.extractors.apple_notes", "--from-db"])
         ran.append("apple_notes")
     if github_ and shutil.which("gh"):
         sh([py, "-m", "corpus.extractors.github_prs"])

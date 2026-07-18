@@ -151,6 +151,58 @@ def test_apple_notes(tmp_path):
     assert "<div>" not in records[1].reply
 
 
+def _note_proto(text: str) -> bytes:
+    """Synthetic NoteStore blob: gzipped proto with text at field path 2.3.2."""
+    import gzip
+
+    def ld(field_no: int, payload: bytes) -> bytes:
+        assert len(payload) < 128 * 128
+        key = bytes([(field_no << 3) | 2])
+        n = len(payload)
+        length = bytes([n]) if n < 128 else bytes([(n & 0x7F) | 0x80, n >> 7])
+        return key + length + payload
+
+    return gzip.compress(ld(2, ld(3, ld(2, text.encode()))))
+
+
+def test_apple_notes_from_db(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "NoteStore.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE ZICNOTEDATA (Z_PK INTEGER PRIMARY KEY, ZNOTE INTEGER,
+            ZCRYPTOINITIALIZATIONVECTOR BLOB, ZDATA BLOB);
+        CREATE TABLE ZICCLOUDSYNCINGOBJECT (Z_PK INTEGER PRIMARY KEY,
+            ZNOTEDATA INTEGER, ZFOLDER INTEGER, ZMARKEDFORDELETION INTEGER,
+            ZTITLE1 TEXT, ZTITLE2 TEXT);
+    """)
+    conn.execute("INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (10, NULL, NULL, 0, NULL, 'Work')")
+    rows = [
+        (1, _note_proto("Pricing philosophy\n" + LONG_BODY), "Pricing philosophy", 0),
+        (2, _note_proto("too short"), "tiny", 0),
+        (3, _note_proto(LONG_BODY), "deleted note", 1),
+        (4, b"not gzip at all", "corrupt", 0),
+    ]
+    for pk, blob, title, deleted in rows:
+        conn.execute("INSERT INTO ZICNOTEDATA VALUES (?, NULL, NULL, ?)", (pk, blob))
+        conn.execute(
+            "INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (?, ?, 10, ?, ?, NULL)",
+            (100 + pk, pk, deleted, title),
+        )
+    conn.execute(  # encrypted note: must be skipped without decode attempts
+        "INSERT INTO ZICNOTEDATA VALUES (5, NULL, X'AABB', X'00')")
+    conn.commit()
+    conn.close()
+
+    records, skipped = apple_notes.extract_db(db)
+    assert [r.meta["title"] for r in records] == ["Pricing philosophy"]
+    assert records[0].meta["folder"] == "Work"
+    assert LONG_BODY in records[0].reply
+    assert records[0].reply.startswith("Pricing philosophy")
+    assert skipped == 1  # the corrupt blob; encrypted + deleted are filtered in SQL
+
+
 # ------------------------------------------------------------------ github
 
 

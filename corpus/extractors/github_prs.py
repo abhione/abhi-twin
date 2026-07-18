@@ -75,12 +75,25 @@ def extract(user: str, limit: int = 1000, run: Runner = _gh) -> list[Record]:
     return records
 
 
+def _authed_user() -> str | None:
+    try:
+        return _gh(["api", "user", "--jq", ".login"]).strip() or None
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
 @click.command(help=__doc__)
-@click.option("--user", envvar="TWIN_GITHUB_USER", required=True)
+@click.option("--user", envvar="TWIN_GITHUB_USER", default=None,
+              help="GitHub login [default: the gh-authed user]")
 @click.option("--limit", default=1000, show_default=True)
 @click.option("--out", type=click.Path(path_type=Path),
               default=Path("corpus/data/extracted/github.jsonl"))
-def main(user: str, limit: int, out: Path) -> None:
+def main(user: str | None, limit: int, out: Path) -> None:
+    user = user or _authed_user()
+    if not user:
+        raise click.ClickException(
+            "no GitHub user — pass --user, set TWIN_GITHUB_USER, or `gh auth login`"
+        )
     records = extract(user, limit)
     n = write_jsonl(out, records)
     click.echo(f"github: {n} records -> {out}")
