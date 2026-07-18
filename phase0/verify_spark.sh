@@ -29,7 +29,11 @@ done
 
 # torch: CUDA available + capability (12,1). This is the canonical gotcha check —
 # a pip-installed torch silently CPU-falls-back and fails here.
-if python3 "$(dirname "$0")/../ci/preflight.py" --check torch; then
+# Torch lives in ~/twin-venv on the Spark (bare python3 can't see it);
+# override with TWIN_PYTHON if the venv lives elsewhere.
+PY="${TWIN_PYTHON:-$HOME/twin-venv/bin/python3}"
+[[ -x "$PY" ]] || PY=python3
+if "$PY" "$(dirname "$0")/../ci/preflight.py" --check torch; then
   echo "PASS  torch cuda capability (12,1)"
 else
   echo "FAIL  torch cuda capability (12,1)"; fail=1
