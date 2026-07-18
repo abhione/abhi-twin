@@ -90,12 +90,24 @@ ssh abhione@spark-e9cb-2.local 'tail -f /twin/logs/build-*.log'
 docker images   # abhi-twin-{llm,orchestrator,stt,tts} appear as they finish
 ```
 
-| image | log | state at launch + expected pain points |
+| image | log | outcome |
 |---|---|---|
-| tts | `/twin/logs/build-tts.log` | **DONE** in <1 min (pip-only layer) |
-| orchestrator | `/twin/logs/build-orchestrator.log` | started; FlagEmbedding dep tree is heavy but binary-only |
-| llm | `/twin/logs/build-llm.log` | started; vLLM nightly cu130 aarch64 wheel — if the wheel resolve fails, fall back to source build (spec §4) |
-| stt | `/twin/logs/build-stt.log` | started; **CTranslate2 v4.7.2 source build for sm_121 — expect hours**, tag verified to exist |
+| tts | `/twin/logs/build-tts.log` | **BUILT** (`abhi-twin-tts`) in <1 min — pip-only layer |
+| orchestrator | `/twin/logs/build-orchestrator.log` | **BUILT** (`abhi-twin-orchestrator`) ~2 min; torch guard passed (FlagEmbedding did not clobber NGC torch) |
+| llm | `/twin/logs/build-llm.log` | **BUILT** (`abhi-twin-llm`) ~5 min — vLLM nightly cu130 aarch64 wheel resolved cleanly, no source build needed |
+| stt | `/twin/logs/build-stt.log` | **IN PROGRESS** (3rd launch 02:41 PDT) — CTranslate2 source compile for sm_121 running, expect up to a few hours. Two real bugs found + fixed en route, see below |
+
+stt needed two rounds of fixes (`ede6a41`, `ea10081`), both now first-class in
+the Dockerfile: (1) CTranslate2 selects CUDA archs via legacy FindCUDA, which
+ignores `CMAKE_CUDA_ARCHITECTURES` and defaulted to `compute_53` — an arch
+CUDA 13 nvcc rejects outright; (2) FindCUDA's `select_compute_arch.cmake`
+parses numeric archs with a single-digit-major regex, so `CUDA_ARCH_LIST=12.1`
+is rejected as an unknown architecture *name*. Fix: sed the
+`cuda_select_nvcc_arch_flags` call into explicit
+`-gencode arch=compute_121,code=sm_121`, grep-guarded against upstream drift.
+Verified in-log: `NVCC compilation flags: …;-gencode;arch=compute_121,code=sm_121`
+and CUDA objects compiling. If it dies later, check the log tail and relaunch —
+BuildKit caches all layers before the compile.
 
 Skipped: **musetalk** (v1.5 scope), **train** image (cloud-burst only, needs
 registry push — pointless without HF/Brev creds). No model weights are needed at
@@ -108,16 +120,24 @@ build, not the first serve), and a new `.dockerignore` whitelists only
 `ci/ serving/ training/ docker/patches/` so the repo-root build context ships no
 `.git`/`.venv`/corpus data.
 
-### RAG ingest — launched detached alongside the builds
+### RAG ingest — COMPLETE
 
 `corpus/data/rag/rag_facts.jsonl` (1,888 hermes-mem facts, 1.5 MB) rsynced to
 `/twin/corpus/rag/`. `serving/rag/ingest.py` now indexes `.jsonl` as one point
 per pre-chunked fact (id/source/kind payload) instead of prose-chunking raw
-JSON. `scripts/spark_rag_ingest.sh` (idempotent) runs detached: starts qdrant
-(`twin-qdrant`, same image + `/twin/qdrant` volume as compose), snapshots
-**ungated** `BAAI/bge-m3` into `/twin/models/bge-m3`, ingests into the `brain`
-collection, then curls the collection as a spot-check. Log:
-`/twin/logs/rag-ingest.log`.
+JSON, upserting in batches of 128 (a single 1,888-point REST call is ~40 MB and
+timed out — fixed in `ede6a41`). `scripts/spark_rag_ingest.sh` (idempotent) ran
+detached: qdrant up as `twin-qdrant` (same image + `/twin/qdrant` volume as
+compose), **ungated** `BAAI/bge-m3` snapshotted to `/twin/models/bge-m3` (no HF
+token needed), ingest on GPU. Result, verified against the live collection:
+
+```
+indexed /twin/corpus/rag/rag_facts.jsonl (1888 chunks)
+OK: 1888 chunks in collection 'brain'
+curl :6333/collections/brain -> {"status":"green", "points_count":1888, ...}
+```
+
+Log: `/twin/logs/rag-ingest.log`. Re-runs are safe (deterministic uuid5 ids).
 
 ### Phase-2 readiness (audit only — no burst launched)
 
