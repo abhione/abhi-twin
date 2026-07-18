@@ -15,7 +15,9 @@ Checks (spec §13 + CLAUDE.md hard constraint #1):
                    (persona = LoRA rank 32, voice = FULL SFT, sdpa, bf16)
   nvrtc            libnvrtc.so.12.8 symlink exists for CUDA-12.8-pinned packages
   onnxruntime      CUDAExecutionProvider resolves (no silent CPU fallback for
-                   insightface face detection in the MuseTalk pipeline)
+                   insightface face detection in the MuseTalk pipeline);
+                   PEND when not installed — the sm_121 build lives in the
+                   musetalk image (video profile, v1.5)
   checkpoints      /twin/checkpoints/*/config.json has no HF-hub _name_or_path
 """
 
@@ -147,11 +149,16 @@ def check_nvrtc() -> tuple[bool, str]:
     return False, f"{dst} missing — run phase0/symlink_nvrtc.sh"
 
 
-def check_onnxruntime() -> tuple[bool, str]:
+def check_onnxruntime() -> tuple[bool | None, str]:
     try:
         import onnxruntime as ort
     except ImportError:
-        return False, "onnxruntime not importable — build from source for sm_121 (video profile)"
+        # The sm_121 source build ships inside docker/musetalk.Dockerfile (v1.5
+        # video profile); absence on the host is expected until that phase.
+        return None, (
+            "onnxruntime not installed — sm_121 build runs in the musetalk image "
+            "(video profile, v1.5); required only inside that container"
+        )
     providers = ort.get_available_providers()
     if "CUDAExecutionProvider" not in providers:
         return False, f"CUDAExecutionProvider missing (got {providers}) — CPU fallback would bite"
@@ -210,8 +217,9 @@ def main() -> int:
             ok, msg = fn()
         except Exception as exc:  # a crashed check is a failed check
             ok, msg = False, f"check crashed: {exc}"
-        print(f"{'PASS' if ok else 'FAIL'}  {name:18s} {msg}")
-        failed += 0 if ok else 1
+        status = "PASS" if ok else ("PEND" if ok is None else "FAIL")
+        print(f"{status}  {name:18s} {msg}")
+        failed += 1 if ok is False else 0
 
     if failed and args.local_only is False and not args.check:
         print("\nNote: spark checks are expected to fail on the Mac. "
