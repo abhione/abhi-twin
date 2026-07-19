@@ -84,9 +84,16 @@ PY
 llamafactory-cli train "$CONFIG"
 
 OUT_DIR=$(python -c "import yaml,sys;print(yaml.safe_load(open('$CONFIG'))['output_dir'])")
-python training/burst/patch_checkpoint.py --checkpoint-dir "$OUT_DIR" \
-  --placeholder "local://$NAME"
+# LoRA runs emit adapter_config.json (no config.json) — patch_checkpoint only
+# applies to full-model checkpoints (e.g. voice full-SFT). Skip it for adapters.
+if [[ -f "$OUT_DIR/config.json" ]]; then
+  python training/burst/patch_checkpoint.py --checkpoint-dir "$OUT_DIR" \
+    --placeholder "local://$NAME"
+else
+  echo "adapter-only checkpoint (no config.json) — skipping _name_or_path patch"
+fi
 
-hf upload "$PUSH_REPO" "$OUT_DIR" . --commit-message "train $NAME ($(basename "$CONFIG"))"
+hf upload "$PUSH_REPO" "$OUT_DIR" . --exclude "checkpoint-*/*" \
+  --commit-message "train $NAME ($(basename "$CONFIG"))"
 echo "OK: pushed $NAME to hf.co/$PUSH_REPO — on the Spark run: make fetch-adapters"
 echo "REMINDER: terminate this instance (spec §5 step 5)."

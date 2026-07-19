@@ -23,9 +23,12 @@ echo "==> running training remotely (config: $CONFIG -> $NAME), fixed script mou
 brev exec "$INSTANCE" "
   set -euo pipefail
   echo '$GHCR_TOKEN' | sudo docker login ghcr.io -u '$GHCR_USER' --password-stdin
+  sudo mkdir -p /ephemeral/hf-cache /ephemeral/workspace
   sudo docker run --gpus all --rm \
     -v /tmp/run_train.sh:/app/training/burst/run_train.sh:ro \
     -v /tmp/train_config.yaml:/app/$CONFIG:ro \
+    -v /ephemeral/hf-cache:/root/.cache/huggingface \
+    -v /ephemeral/workspace:/workspace \
     -e HF_TOKEN='$HF_TOKEN' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
     $IMAGE training/burst/run_train.sh $CONFIG $NAME
 "
