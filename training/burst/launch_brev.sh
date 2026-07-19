@@ -17,6 +17,22 @@ command -v brev >/dev/null || {
   exit 1
 }
 
+# preflight: brev auth is a browser SSO (login.nvidia.com) whose token expires;
+# fail fast instead of dying mid-provision
+auth_out=$(brev ls </dev/null 2>&1 || true)
+if grep -qiE "logged out|would you like to log in|malformed refresh token" <<<"$auth_out"; then
+  echo "FATAL: brev CLI is not authenticated (SSO token expired). Run 'brev login' in a browser session, then retry." >&2
+  exit 1
+fi
+
+# preflight: the training image must exist on the registry or the remote docker run fails
+if ! curl -fsSL "https://ghcr.io/token?scope=repository:${IMAGE#ghcr.io/}:pull" 2>/dev/null \
+     | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('token') else 1)" 2>/dev/null; then
+  echo "FATAL: $IMAGE not found on registry. Build+push it first:" >&2
+  echo "  docker buildx build --platform linux/amd64 -f docker/train.Dockerfile -t $IMAGE --push ." >&2
+  exit 1
+fi
+
 echo "==> creating $INSTANCE ($GPU) on Brev"
 brev create "$INSTANCE" --gpu "$GPU"
 
@@ -24,7 +40,7 @@ echo "==> running training remotely (config: $CONFIG -> $NAME)"
 brev shell "$INSTANCE" -- bash -lc "
   set -euo pipefail
   docker run --gpus all --rm \
-    -e HF_TOKEN='$HF_TOKEN' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-abhi/$NAME}' \
+    -e HF_TOKEN='$HF_TOKEN' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
     $IMAGE training/burst/run_train.sh $CONFIG $NAME
 "
 
