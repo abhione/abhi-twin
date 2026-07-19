@@ -62,7 +62,7 @@ brev exec "$INSTANCE" "
   set -euo pipefail
   echo '$GHCR_TOKEN' | sudo docker login ghcr.io -u '$GHCR_USER' --password-stdin
   sudo docker run --gpus all --rm \
-    -e HF_TOKEN='***' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
+    -e HF_TOKEN='$HF_TOKEN' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
     $IMAGE training/burst/run_train.sh $CONFIG $NAME
 "
 
