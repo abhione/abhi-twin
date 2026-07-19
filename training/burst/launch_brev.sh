@@ -40,7 +40,7 @@ tag="${IMAGE##*:}"
 pull_tok=$(curl -fsSL -u "$GHCR_USER:$GHCR_TOKEN" "https://ghcr.io/token?scope=repository:${repo_path}:pull" \
   | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
 code=$(curl -fsSL -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer $pull_tok" \
+  -H "Authorization: Bearer ${pull_tok}" \
   -H "Accept: application/vnd.oci.image.index.v1+json" \
   -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
   "https://ghcr.io/v2/${repo_path}/manifests/${tag}" 2>/dev/null || echo 000)
@@ -51,14 +51,18 @@ if [[ "$code" != "200" ]]; then
 fi
 
 echo "==> creating $INSTANCE ($GPU) on Brev"
-brev create "$INSTANCE" --gpu "$GPU"
+# new brev CLI (2026): --gpu was replaced by search filters / --type. Filter by GPU
+# name + enough disk for the 72B base + corpus; cheapest match is tried first with
+# automatic fallback across types.
+brev create "$INSTANCE" --gpu-name "$GPU" --min-disk 400 --min-total-vram 70
 
 echo "==> running training remotely (config: $CONFIG -> $NAME)"
-brev shell "$INSTANCE" -- bash -lc "
+# brev exec runs non-interactively on the instance ('shell -- cmd' is no longer supported)
+brev exec "$INSTANCE" "
   set -euo pipefail
-  echo '$GHCR_TOKEN' | docker login ghcr.io -u '$GHCR_USER' --password-stdin
-  docker run --gpus all --rm \
-    -e HF_TOKEN='$HF_TOKEN' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
+  echo '$GHCR_TOKEN' | sudo docker login ghcr.io -u '$GHCR_USER' --password-stdin
+  sudo docker run --gpus all --rm \
+    -e HF_TOKEN='***' -e HF_CORPUS_REPO='$HF_CORPUS_REPO' -e PUSH_REPO='${PUSH_REPO:-}' \
     $IMAGE training/burst/run_train.sh $CONFIG $NAME
 "
 
