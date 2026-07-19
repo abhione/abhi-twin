@@ -39,9 +39,47 @@ cat > "$WORK/corpus/dataset_info.json" <<'JSON'
 JSON
 
 # create the (private) push repo BEFORE training so a push failure surfaces now,
-# not after hours of H100 time
-hf repo create "$PUSH_REPO" --private 2>/dev/null || true
-hf repo info "$PUSH_REPO" >/dev/null
+# not after hours of H100 time. NOTE: newer hf CLIs removed 'hf repo info' — use
+# the python API for both create and verify (works across CLI versions).
+python - <<PY
+from huggingface_hub import create_repo, repo_info
+create_repo("$PUSH_REPO", private=True, exist_ok=True)
+repo_info("$PUSH_REPO")
+print("push repo OK: $PUSH_REPO")
+PY
+
+# NGC-image gotcha: torchaudio's compiled ext can be ABI-broken against the NGC
+# torch nightly, and llamafactory imports torchaudio unconditionally (mm_plugin)
+# even for text-only runs. If it can't load, stub it out.
+python - <<'PY'
+try:
+    import torchaudio  # noqa: F401
+    print("torchaudio OK")
+except Exception as e:
+    import importlib.util, pathlib
+    spec = importlib.util.find_spec("torchaudio")
+    pkg = pathlib.Path(spec.origin).parent
+    (pkg / "__init__.py").write_text('__version__ = "2.0.0+stub"\n')
+    print(f"torchaudio broken ({type(e).__name__}) -> stubbed (text-only training)")
+PY
+
+# QLoRA path (bnb 4-bit): verify bitsandbytes works against the NGC torch; install
+# only if missing. (History: AWQ base was abandoned — autoawq deprecated/ABI-broken,
+# gptqmodel needs torch>=2.11 symbols the NGC 2.10 nightly lacks.)
+python - <<'PY'
+import torch
+assert torch.cuda.is_available(), "no CUDA torch — wrong image"
+try:
+    import bitsandbytes as bnb
+    print("bitsandbytes OK:", bnb.__version__)
+except Exception:
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install",
+                           "--no-build-isolation", "--no-deps", "bitsandbytes"])
+    import bitsandbytes as bnb
+    print("bitsandbytes installed:", bnb.__version__)
+assert torch.cuda.is_available(), "torch lost CUDA after bnb install!"
+PY
 
 llamafactory-cli train "$CONFIG"
 

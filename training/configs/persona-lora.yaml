@@ -1,6 +1,12 @@
 # Persona LoRA — spec §7, following lmxxf/little-pink-lora. Trains on cloud H100.
 # --- verbatim from docs/twin_build_spec_v2.md §7 ---
-model_name_or_path: Qwen/Qwen2.5-72B-Instruct-AWQ
+# NOTE (Jul 2026): spec named the AWQ base, but AWQ loading on the NGC train image
+# is broken (autoawq deprecated/ABI-broken; transformers routes AWQ via gptqmodel
+# which won't import against NGC torch 2.10 nightly). QLoRA on the full base via
+# bitsandbytes 4-bit is the equivalent, robust path — same LoRA adapter out.
+model_name_or_path: Qwen/Qwen2.5-72B-Instruct
+quantization_bit: 4
+quantization_method: bnb
 finetuning_type: lora
 lora_target: all
 lora_rank: 32                 # bumped from lmxxf's 16 — we have more data
@@ -12,7 +18,7 @@ gradient_accumulation_steps: 8
 lr_scheduler_type: cosine
 warmup_ratio: 0.03
 bf16: true                    # Blackwell / Hopper both prefer bf16 over fp16
-attn_implementation: sdpa     # NOT flash_attn
+flash_attn: sdpa              # LLaMA-Factory key for attention backend (SDPA, not fa2)
 gradient_checkpointing: true
 
 # --- harness additions (required by LLaMA-Factory to run; not part of spec §7) ---

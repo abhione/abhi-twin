@@ -15,7 +15,7 @@ early_stopping_threshold: 0.01
 # --- harness additions (required to run; not part of spec §8) ---
 stage: sft
 do_train: true
-attn_implementation: sdpa     # SDPA everywhere on Blackwell; RTF target < 1.0x
+flash_attn: sdpa              # SDPA everywhere on Blackwell; RTF target < 1.0x
 dataset_dir: /workspace/corpus/audio   # (audio_path, transcript) pairs from whisperx
 cutoff_len: 2048
 output_dir: /workspace/out/voice-v1
