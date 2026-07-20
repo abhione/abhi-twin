@@ -15,7 +15,9 @@ import httpx
 from fastapi import FastAPI, UploadFile
 from pydantic import BaseModel
 
+from serving.orchestrator import memory
 from serving.orchestrator.graph import build_graph
+from serving.soul import loader
 
 SPARK = os.environ.get("TWIN_SPARK_HOST", "localhost")
 STT_URL = os.environ.get("TWIN_STT_URL", f"http://{SPARK}:8003/v1")
@@ -45,6 +47,34 @@ def chat(req: ChatRequest) -> dict:
         "route": state["route"],
         "audio_b64": base64.b64encode(state["audio"]).decode() if state.get("audio") else None,
     }
+
+
+class SessionRequest(BaseModel):
+    session: str
+
+
+class MemoryRequest(BaseModel):
+    text: str
+
+
+@app.post("/session/clear")
+def session_clear(req: SessionRequest) -> dict:
+    """Drop a session's conversation history (the relay's /new command)."""
+    return {"cleared": memory.clear(req.session)}
+
+
+@app.post("/memory/append")
+def memory_append(req: MemoryRequest) -> dict:
+    """Append a timestamped line to /twin/soul/MEMORY.md (the relay's /remember).
+
+    The relay is allowlist-gated; the container is the single MEMORY.md writer.
+    """
+    return {"appended": loader.remember(req.text)}
+
+
+@app.get("/soul/identity")
+def soul_identity() -> dict:
+    return {"identity": loader.identity_line()}
 
 
 @app.post("/v1/audio/roundtrip")

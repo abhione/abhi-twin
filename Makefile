@@ -97,6 +97,14 @@ serve-down: ## [spark] stop the stack
 verify-e2e: setup ## [spark] gate: voice round trip < 3 s
 	$(PY) scripts/e2e_roundtrip.py --gate
 
+# SOUL.md/FACTS.md always win from the repo; MEMORY.md holds runtime memories
+# written by /remember, so it only seeds when absent — never clobbered.
+TWIN_SPARK_SSH ?= abhione@spark-e9cb-2.local
+soul-sync: ## [mac] push soul files to the Spark's /twin/soul (preserves runtime MEMORY.md)
+	ssh $(TWIN_SPARK_SSH) 'mkdir -p /twin/soul'
+	rsync -v serving/soul/SOUL.md serving/soul/FACTS.md $(TWIN_SPARK_SSH):/twin/soul/
+	rsync -v --ignore-existing serving/soul/MEMORY.md $(TWIN_SPARK_SSH):/twin/soul/
+
 # ---------------------------------------------------------------- v1.5: video
 video: serve-all ## [spark] alias: full stack incl. MuseTalk
 
@@ -116,6 +124,6 @@ clean: ## [mac] remove venv + caches (never touches corpus data)
 
 .PHONY: help setup lint test-local phase0 verify-phase0 corpus verify-corpus corpus-sync \
         corpus-upload train-persona train-voice train-musetalk fetch-adapters verify-persona \
-        verify-persona-external verify-voice serve serve-voice serve-all serve-down verify-e2e \
+        verify-persona-external verify-voice serve serve-voice serve-all serve-down verify-e2e soul-sync \
         video video-demo \
         verify-video preflight clean

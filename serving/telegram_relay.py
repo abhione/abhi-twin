@@ -2,8 +2,10 @@
 """Telegram relay for the AbhiTwin orchestrator. host: spark.
 
 Long-polls Telegram getUpdates, forwards allowed users' text to the
-orchestrator (POST /chat), replies with the twin's answer. Optional /voice
-toggle replies with an OGG voice note via the TTS service.
+orchestrator (POST /chat) with a per-chat session id, replies with the twin's
+answer. Commands: /voice toggles OGG voice notes, /new clears the session's
+history, /whoami states the twin's identity, /remember <text> appends to the
+twin's persistent MEMORY.md (all users here are already allowlisted).
 
 Env: TWIN_TELEGRAM_TOKEN_FILE, TWIN_TELEGRAM_ALLOWED_IDS (csv),
      TWIN_ORCH_URL (default http://localhost:8080).
@@ -20,7 +22,6 @@ import urllib.request
 
 ORCH = os.environ.get("TWIN_ORCH_URL", "http://localhost:8080")
 TOKEN = open(os.environ["TWIN_TELEGRAM_TOKEN_FILE"]).read().strip()
-ALLOWED = {int(x) for x in os.environ["TWIN_TELEGRAM_ALLOWED_IDS"].split(",")}
 ALLOWED = {int(x) for x in os.environ["TWIN_TELEGRAM_ALLOWED_IDS"].split(",")}
 API = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -56,14 +57,47 @@ def send_voice(chat_id: int, wav_b64: str) -> None:
     os.unlink(ogg)
 
 
-def ask_twin(text: str, voice: bool) -> dict:
+def orch(path: str, payload: dict, timeout: int = 180) -> dict:
     req = urllib.request.Request(
-        f"{ORCH}/chat",
-        data=json.dumps({"text": text, "voice": voice}).encode(),
+        f"{ORCH}{path}",
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+
+def ask_twin(text: str, voice: bool, session: str) -> dict:
+    return orch("/chat", {"text": text, "voice": voice, "session": session})
+
+
+def handle_command(chat_id: int, text: str) -> bool:
+    """Handle a relay command; returns True when the message was consumed."""
+    cmd, _, arg = text.strip().partition(" ")
+    if cmd == "/voice":
+        voice_mode[chat_id] = not voice_mode.get(chat_id, False)
+        tg("sendMessage", chat_id=chat_id,
+           text=f"voice replies: {'on' if voice_mode[chat_id] else 'off'}")
+    elif cmd == "/start":
+        tg("sendMessage", chat_id=chat_id,
+           text="AbhiTwin online (persona-v1 on the Spark). /voice voice notes, "
+                "/new fresh session, /whoami identity, /remember <text> saves a memory.")
+    elif cmd == "/new":
+        orch("/session/clear", {"session": f"tg-{chat_id}"}, timeout=30)
+        tg("sendMessage", chat_id=chat_id, text="fresh start")
+    elif cmd == "/whoami":
+        req = urllib.request.Request(f"{ORCH}/soul/identity")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            tg("sendMessage", chat_id=chat_id, text=json.load(r)["identity"])
+    elif cmd == "/remember":
+        if not arg.strip():
+            tg("sendMessage", chat_id=chat_id, text="usage: /remember <text>")
+        else:
+            out = orch("/memory/append", {"text": arg}, timeout=30)
+            tg("sendMessage", chat_id=chat_id, text=f"remembered: {out['appended']}")
+    else:
+        return False
+    return True
 
 
 def main() -> None:
@@ -85,22 +119,23 @@ def main() -> None:
                 continue
             if not text or (msg.get("from") or {}).get("id") not in ALLOWED:
                 continue
-            if text.strip() == "/voice":
-                voice_mode[chat_id] = not voice_mode.get(chat_id, False)
-                tg("sendMessage", chat_id=chat_id,
-                   text=f"voice replies: {'on' if voice_mode[chat_id] else 'off'}")
-                continue
-            if text.strip() == "/start":
-                tg("sendMessage", chat_id=chat_id,
-                   text="AbhiTwin online (persona-v1 on the Spark). /voice toggles voice notes.")
-                continue
+            if text.startswith("/"):
+                try:
+                    if handle_command(chat_id, text):
+                        continue
+                except Exception as e:  # noqa: BLE001
+                    tg("sendMessage", chat_id=chat_id, text=f"command error: {e}")
+                    continue
+            print(f"msg from {chat_id}: {text[:80]!r}", flush=True)
+            t0 = time.time()
             tg("sendChatAction", chat_id=chat_id, action="typing", timeout=10)
             try:
-                out = ask_twin(text, voice_mode.get(chat_id, False))
+                out = ask_twin(text, voice_mode.get(chat_id, False), f"tg-{chat_id}")
             except Exception as e:  # noqa: BLE001
                 tg("sendMessage", chat_id=chat_id, text=f"twin error: {e}")
                 continue
             reply = out.get("reply") or "(empty reply)"
+            print(f"reply in {time.time()-t0:.1f}s ({len(reply)} chars)", flush=True)
             tg("sendMessage", chat_id=chat_id, text=reply[:4000])
             if voice_mode.get(chat_id, False) and out.get("audio_b64"):
                 try:

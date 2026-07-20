@@ -37,6 +37,7 @@ packages = [
     "corpus.extractors",
     "serving",
     "serving.orchestrator",
+    "serving.soul",
     "serving.rag",
     "serving.tts",
     "serving.stt",

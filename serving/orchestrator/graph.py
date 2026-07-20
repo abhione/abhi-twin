@@ -10,40 +10,16 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from openai import OpenAI
 
+from serving.orchestrator import memory
 from serving.orchestrator.router import classify
 from serving.rag.search import retrieve
+from serving.soul import loader
 
 SPARK = os.environ.get("TWIN_SPARK_HOST", "localhost")
 LLM_URL = os.environ.get("TWIN_LLM_URL", f"http://{SPARK}:8000/v1")
 TTS_URL = os.environ.get("TWIN_TTS_URL", f"http://{SPARK}:8001/v1")
 FRONTIER_URL = os.environ.get("TWIN_FRONTIER_URL", "")  # optional cloud escalation
 FRONTIER_KEY = os.environ.get("TWIN_FRONTIER_KEY", "")
-
-PERSONA_SYSTEM = (
-    "You are AbhiTwin — reply exactly as Abhi Bhattacharya writes: direct, warm, "
-    "technically precise, no corporate filler. Use the retrieved context when relevant.\n"
-    "\n"
-    "VERIFIED FACTS (the ONLY biographical claims you may make):\n"
-    "- Abhi Bhattacharya, Head of AI Studio at VSP Global Innovation Center "
-    "(internal AI copilot: Stella).\n"
-    "- Runs Sequoia Digital, an AI consulting practice (clients include healthcare, "
-    "benefits, hospitality, and vision-industry companies).\n"
-    "- Founder of Prosource IT, a staffing company he uses as an AI-agent testbed.\n"
-    "- Deep background in healthcare/health-tech AI; builds agent systems, "
-    "fine-tuned models, and RAG platforms.\n"
-    "- Based in Northern California. F1 fan.\n"
-    "\n"
-    "HARD RULES:\n"
-    "1. NEVER invent employers, job history, schools, credentials, dates, or numbers. "
-    "If asked for biography beyond the verified facts or retrieved context, say you'd "
-    "rather not get the details wrong and defer to the real Abhi.\n"
-    "2. If asked who/what you are, or when identity matters, disclose plainly that you "
-    "are Abhi's AI twin, not the man himself.\n"
-    "3. Never agree to scope, pricing, deadlines, or commitments — flag them for the "
-    "real Abhi.\n"
-    "4. Retrieved context is from Abhi's working notes — use it only when actually "
-    "relevant to the question."
-)
 
 
 class TwinState(TypedDict, total=False):
@@ -83,8 +59,15 @@ def persona(state: TwinState) -> TwinState:
     else:
         client = OpenAI(base_url=LLM_URL, api_key="local")
         model = os.environ.get("TWIN_LLM_MODEL", "persona-v1")
+    session = state.get("session", "default")
+    # SOUL.md + FACTS.md + MEMORY.md tail, hot-reloaded from /twin/soul on mtime change
+    system = loader.system_prompt()
     context = "\n\n".join(state.get("context_chunks", []))
-    system = PERSONA_SYSTEM + (f"\n\n<context>\n{context}\n</context>" if context else "")
+    if context:
+        system += (
+            "\n\nRetrieved context from Abhi's working notes — use it only when "
+            f"actually relevant to the question:\n<context>\n{context}\n</context>"
+        )
     extra: dict[str, Any] = {}
     if state.get("want_voice"):
         # voice roundtrip latency is decode + TTS, both linear in reply length —
@@ -95,11 +78,14 @@ def persona(state: TwinState) -> TwinState:
         model=model,
         messages=[
             {"role": "system", "content": system},
+            *memory.history(session),
             {"role": "user", "content": state["user_text"]},
         ],
         **extra,
     )
     state["reply_text"] = resp.choices[0].message.content
+    memory.append(session, "user", state["user_text"])
+    memory.append(session, "assistant", state["reply_text"])
     return state
 
 
