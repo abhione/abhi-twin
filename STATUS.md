@@ -1,4 +1,4 @@
-# AbhiTwin — Status (updated 2026-07-19 ~18:10 PT, Phase 3: persona-v1 served + eval gate PASSED)
+# AbhiTwin — Status (updated 2026-07-19 late, Phase 4: serving gates run — persona PASS, voice PASS, e2e FAIL 3.2s/3.0s)
 
 Phase 0 (Spark bring-up) and Phase 1 (corpus) are done. All output below is
 real command output (trimmed).
@@ -407,16 +407,132 @@ no gate is defined on it.
   Spark-side mutations were `.env` additions, the adapter patch (with `.bak`),
   and the qdrant container swap.
 
+## Phase 4 — serving gates (2026-07-19, second session)
+
+Full voice stack up (`llm`, `tts`, `stt`, `qdrant`, `orchestrator`). All output
+below is real command output (trimmed).
+
+### 1. `make verify-persona` re-run on the BAKED llm image: **PASSED**
+
+The rebuilt image (`ba69d0b`) carries `eval/` + pinned deps — no `docker cp`
+steps were needed. Fresh generation run, same frozen holdout, n=30:
+
+```
+{
+  "ab_indistinguishable": 0.6666666666666666,
+  "style_cosine": 0.23740927540853238,
+  "boilerplate_rate": 0.0,
+  "ppl_base": 148.6796911492048,
+  "ppl_persona": 25.477797503077582,
+  "ppl_within_pct": true,
+  "n": 30
+}
+=== verify-persona: PASSED ===
+```
+
+Self-judge A/B 66.7% this run vs 73.3% last run — generation sampling
+variance; every gate still clears (≥30% bar, PPL 25.48 vs 148.68, 0%
+boilerplate). Pairs persisted to `/twin/eval/ab_pairs.json` (seed 7,
+order-swapped) for external re-judging.
+
+### 2. External-judge A/B (claude-haiku-4-5 over the SAME pairs): **26.7%**
+
+`make verify-persona-external` on the Mac (30 sequential claude-CLI calls,
+`env -u ANTHROPIC_API_KEY` so the Max sub is billed, never the API key).
+
+**A scoring bug was caught en route**: the first run reported 3.3%, but the
+per-pair log showed 6/30 human-miss votes (20%). Haiku answers `B.` /
+`**A**` / letter-plus-prose, and the exact-match scorer silently counted any
+verbose verdict as not-fooled. Fixed in `0865457` (`_verdict_token`: first
+alphanumeric token; external judgments now persisted in the results JSON;
+regression test added — `make test-local` 94 passed, ruff clean). Re-run with
+the fix:
+
+```
+{
+  "judge": "claude-cli:claude-haiku-4-5-20251001",
+  "ab_indistinguishable": 0.26666666666666666,   # 8/30: 6 wrong picks + 2 "indistinguishable"
+  "n": 30,
+  "self_judge_ab": 0.6666666666666666
+}
+```
+
+Read: the same-family Qwen judge inflates A/B ~2.5× (66.7% vs 26.7% on
+identical pairs). The official spec §12 gate (local judge) passes; an
+external judge lands just **under** the 30% bar and well under Phase 5's 40%.
+Persona quality against a frontier judge is the real Phase-5 risk — more
+corpus (Gmail long-form) and/or another LoRA round is the lever.
+
+### 3. `make verify-voice` re-run on a quiet box: **PASSED**
+
+The earlier 1.959 RTF failure was measured while vLLM was mid-reload; with
+the box quiet it passes with 2× headroom, no code change:
+
+```
+{ "rtf": 0.71, "audio_seconds": 19.44, "wall_s": 13.806,
+  "warmup_s": 0.97, "peak_amplitude": 22784, "nan_in_synth_path": false }
+=== verify-voice: PASSED ===
+```
+
+### 4. `make verify-e2e` (voice roundtrip < 3 s): **FAILED — 3.06–3.34 s warm**
+
+First run: **13.8 s** — the persona node had no `max_tokens` cap, so voice
+replies ran long, and roundtrip = STT + LLM decode + non-streaming TTS, the
+last two linear in reply length. Fixed in `9123686` (voice requests get a
+spoken-reply brevity instruction + `max_tokens 60`; orchestrator rebuilt +
+redeployed). Trials after the fix:
+
+| trial | roundtrip_s | note |
+|---|---|---|
+| 1 | 9.15 | cold start — BGE-M3 embedder loads on first retrieval |
+| 2–6 | 3.06, 3.30, 3.16, 3.23, 3.34 | warm steady state |
+
+Stage breakdown (measured individually, quiet box): STT 0.23 s · LLM 1.63 s
+for a 9-token reply (**5.5 tok/s** decode on the 72B AWQ — the bottleneck) ·
+TTS 1.52 s for ~2.8 s audio (RTF 0.71) · retrieval/overhead ~0.3 s. Floor ≈
+3.2 s, so the 3.0 s bar is structurally out of reach in this configuration —
+a marginal, honest FAIL, not flakiness. Paths to green, in preference order:
+1. **Streaming TTS** (synth while the LLM decodes; gate on first-audio
+   latency) — the real fix, fits the MuseTalk streaming path anyway.
+2. Spec §2 escape valve: Qwen2.5-32B-NVFP4 roughly doubles decode speed.
+3. Warm the embedder at orchestrator start (kills the 9 s cold first call).
+
+### 5. Memory audit vs the spec §2 ~89 GB budget: **WITHIN BUDGET**
+
+`free -g` steady state with the full voice stack up: **75 GB used / 121 GB
+total, 45 GB available**, swap 0. (`nvidia-smi` memory reads N/A on GB10 —
+unified memory; model weights live in the host "used" figure, outside the
+container cgroups.) Container cgroup usage vs compose limits:
+
+| container | used | limit |
+|---|---|---|
+| llm | 5.9 GiB (+ ~50 GB unified model/KV outside cgroup) | 50 GiB |
+| tts | 2.0 GiB | 5 GiB |
+| stt | 0.85 GiB | 4 GiB |
+| orchestrator | 2.2 GiB (BGE-M3 loaded) | 6 GiB |
+| qdrant | 0.10 GiB | 4 GiB |
+
+### 6. Session commits
+
+- `9123686` fix(orchestrator): cap voice replies (brevity prompt + max_tokens 60)
+- `0865457` fix(eval): parse verbose judge verdicts (first token), persist external judgments
+
+Spark clone pulled to `0865457`, working tree clean. The eval parsing fix does
+not alter recorded gate numbers (all 30 Qwen self-judge verdicts were already
+exact single tokens — verified from the persisted pairs file).
+
 ## Next actions for Abhi (human-blocked)
 
 - [ ] Optional: Gmail Takeout download → `twin corpus --local --mbox …` adds
       Abhi's long-form mail voice to the corpus (then rebuild + re-sync).
 - [ ] Voice recording session per `scripts/record_corpus.md` (mic setup,
       Harvard sentences, identity video shot list) — feeds the voice phase.
-- [ ] Optional (recommended): rebuild the llm image
-      (`docker compose --project-directory . -f docker/compose.yaml build llm`)
-      to bake in `eval/` — until then re-runs of `make verify-persona` on a
-      fresh container need the `docker cp` + `pip install --no-deps
-      sentence-transformers==3.4.1` steps from §7 above.
-- [ ] Optional: re-run the A/B with a non-Qwen external judge to sanity-check
-      the 73.3% before trusting it against Phase 5's 40% bar.
+- [x] ~~Rebuild the llm image to bake in `eval/`~~ — done (`ba69d0b`);
+      `make verify-persona` re-verified clean on the baked image (Phase 4 §1).
+- [x] ~~Re-run the A/B with a non-Qwen external judge~~ — done (Phase 4 §2):
+      **26.7%** vs 66.7% self-judge on identical pairs. Phase 5's 40% bar will
+      not clear against an external judge without more corpus / another LoRA
+      round.
+- [ ] Decide the e2e gate path (Phase 4 §4): streaming TTS (recommended),
+      32B escape valve, or accept ~3.2 s and re-spec the gate. Warm-start the
+      embedder either way.
