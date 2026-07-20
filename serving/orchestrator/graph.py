@@ -64,12 +64,19 @@ def persona(state: TwinState) -> TwinState:
         model = os.environ.get("TWIN_LLM_MODEL", "persona-v1")
     context = "\n\n".join(state.get("context_chunks", []))
     system = PERSONA_SYSTEM + (f"\n\n<context>\n{context}\n</context>" if context else "")
+    extra: dict[str, Any] = {}
+    if state.get("want_voice"):
+        # voice roundtrip latency is decode + TTS, both linear in reply length —
+        # spoken replies must stay conversational (spec §12 <3 s e2e gate)
+        system += "\n\nThis reply will be spoken aloud: answer in one or two short sentences."
+        extra["max_tokens"] = 60
     resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": state["user_text"]},
         ],
+        **extra,
     )
     state["reply_text"] = resp.choices[0].message.content
     return state
