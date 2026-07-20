@@ -49,6 +49,14 @@ def ab_pairs(twin: list[str], real: list[str], seed: int = 7) -> list[dict]:
     return pairs
 
 
+def _verdict_token(verdict: str) -> str:
+    """First alphanumeric token of a judge reply, lowercased — verbose judges
+    answer 'B.' / '**A**' / 'B — the phrasing…'; scoring must not depend on the
+    judge's formatting discipline (a dropped verdict silently counts not-fooled)."""
+    m = re.search(r"[a-z]+", verdict.lower())
+    return m.group(0) if m else ""
+
+
 def indistinguishable_rate(judgments: list[str], pairs: list[dict]) -> float:
     """Fraction where the judge failed to pick the human: said 'indistinguishable'
     or picked the twin's slot."""
@@ -56,7 +64,7 @@ def indistinguishable_rate(judgments: list[str], pairs: list[dict]) -> float:
         return 0.0
     fooled = 0
     for verdict, pair in zip(judgments, pairs):
-        v = verdict.strip().lower()
+        v = _verdict_token(verdict)
         if v.startswith("indistinguishable") or (v in ("a", "b") and v.upper() != pair["real_slot"]):
             fooled += 1
     return fooled / len(judgments)
@@ -248,6 +256,7 @@ def main(eval_file: Path, n_ab: int, gate: bool, gate_ab: float,
             "ab_indistinguishable": indistinguishable_rate(judgments, data["pairs"]),
             "n": len(data["pairs"]),
             "self_judge_ab": indistinguishable_rate(data.get("judgments", []), data["pairs"]),
+            "judgments": judgments,  # persisted for audit — scoring bugs hide here
         }
         click.echo(json.dumps(results, indent=2))
         if gate:

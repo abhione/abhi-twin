@@ -40,6 +40,15 @@ def test_indistinguishable_rate():
     assert persona.indistinguishable_rate([], []) == 0.0
 
 
+def test_indistinguishable_rate_verbose_judges():
+    # external judges answer with formatting/prose; the verdict is the first token
+    pairs = [{"real_slot": "A"}, {"real_slot": "B"}, {"real_slot": "A"}, {"real_slot": "B"}]
+    judgments = ["**B**", "B. The phrasing in B is clearly human.", "Indistinguishable.", "A"]
+    # B vs real A -> fooled, B==real -> not, indistinguishable -> fooled,
+    # A vs real B -> fooled  => 3/4
+    assert persona.indistinguishable_rate(judgments, pairs) == 0.75
+
+
 def test_within_pct():
     assert persona.within_pct(11.0, 10.0, 15.0)
     assert not persona.within_pct(12.0, 10.0, 15.0)
