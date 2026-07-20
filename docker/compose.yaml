@@ -8,7 +8,7 @@ x-twin-volumes: &twin-volumes
 
 services:
   llm:
-    build: {context: .., dockerfile: docker/llm.Dockerfile}
+    build: {context: ., dockerfile: docker/llm.Dockerfile}
     profiles: [core]
     ports: ["8000:8000"]
     volumes: *twin-volumes
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   orchestrator:
-    build: {context: .., dockerfile: docker/orchestrator.Dockerfile}
+    build: {context: ., dockerfile: docker/orchestrator.Dockerfile}
     profiles: [core]
     ports: ["8080:8080"]
     volumes: *twin-volumes
@@ -64,7 +64,7 @@ services:
     restart: unless-stopped
 
   tts:
-    build: {context: .., dockerfile: docker/tts.Dockerfile}
+    build: {context: ., dockerfile: docker/tts.Dockerfile}
     profiles: [voice]
     # 8002 is the streaming variant; same process serves both endpoints so the
     # 5 GB model loads once
@@ -81,7 +81,7 @@ services:
     restart: unless-stopped
 
   stt:
-    build: {context: .., dockerfile: docker/stt.Dockerfile}
+    build: {context: ., dockerfile: docker/stt.Dockerfile}
     profiles: [voice]
     ports: ["8003:8003"]
     volumes: *twin-volumes
@@ -90,7 +90,7 @@ services:
     restart: unless-stopped
 
   musetalk:
-    build: {context: .., dockerfile: docker/musetalk.Dockerfile}
+    build: {context: ., dockerfile: docker/musetalk.Dockerfile}
     profiles: [video]
     ports: ["8004:8004"]
     volumes: *twin-volumes

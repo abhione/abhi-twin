@@ -1,4 +1,6 @@
-# Build context is the repo root (compose.yaml: context ..). Whitelist only what
+# Build context is the repo root (compose.yaml: context . resolved against the
+# --project-directory, which the Makefile pins to the repo root; compose v5
+# resolves build.context against the project dir, not the compose-file dir). Whitelist only what
 # the Dockerfiles COPY — keeps .git/.venv/corpus data out of every build context
 # (privacy constraint #3 and multi-GB context uploads).
 *
