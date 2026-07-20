@@ -89,6 +89,10 @@ def check_no_flash_attn() -> tuple[bool, str]:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for i, line in enumerate(text.splitlines(), 1):
+            # `flash_attn: sdpa` is LlamaFactory's key NAME for selecting the
+            # attention backend — that exact value ENFORCES SDPA, so it's exempt
+            if re.search(r"flash_attn:\s*sdpa\b", line):
+                continue
             if "flash_attn" in line and "NOT" not in line and "not flash" not in line.lower():
                 bad.append(f"{path.relative_to(REPO)}:{i}")
     if bad:
