@@ -7,7 +7,9 @@ VENV  := .venv
 PY    := $(VENV)/bin/python
 PIP   := $(VENV)/bin/pip
 RUFF  := $(VENV)/bin/ruff
-COMPOSE := docker compose -f docker/compose.yaml
+# --project-directory . makes compose read the repo-root .env (otherwise it
+# looks for docker/.env and TWIN_* overrides are silently ignored)
+COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
 .DEFAULT_GOAL := help
 

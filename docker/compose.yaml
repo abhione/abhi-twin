@@ -17,6 +17,20 @@ services:
     environment:
       - TWIN_LLM_MODEL_DIR=${TWIN_LLM_MODEL_DIR:-/twin/models/qwen2.5-72b-nvfp4}
       - TWIN_PERSONA_ADAPTER=${TWIN_PERSONA_ADAPTER:-/twin/adapters/persona-v1}
+      - TWIN_GPU_MEM_UTIL=${TWIN_GPU_MEM_UTIL:-0.42}
+    # overrides the Dockerfile CMD (no rebuild needed): adds --max-lora-rank 32
+    # (persona LoRA is rank 32; vLLM default is 16 → adapter load fails) and
+    # --gpu-memory-utilization sized to the 50 GB budget line — GB10 unified
+    # memory means the 0.9 default would grab ~109 GB of the shared 121 GB.
+    command: >
+      sh -c 'python ci/preflight.py --check torch &&
+      exec vllm serve "$$TWIN_LLM_MODEL_DIR"
+      --served-model-name persona-v1 qwen2.5-72b
+      --enable-lora --lora-modules persona-v1="$$TWIN_PERSONA_ADAPTER"
+      --max-lora-rank 32
+      --max-model-len 8192
+      --gpu-memory-utilization "$$TWIN_GPU_MEM_UTIL"
+      --port 8000'
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]

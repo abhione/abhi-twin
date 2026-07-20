@@ -166,17 +166,28 @@ def check_onnxruntime() -> tuple[bool | None, str]:
 
 
 def check_checkpoints() -> tuple[bool, str]:
-    root = Path("/twin/checkpoints")
-    if not root.exists():
-        return True, "no /twin/checkpoints yet — nothing to validate"
+    # full checkpoints carry config.json/_name_or_path; PEFT adapters carry
+    # adapter_config.json/base_model_name_or_path — both must point at /twin
+    # or offline loads resolve to the hub (the Milo bug)
+    targets = (
+        (Path("/twin/checkpoints"), "config.json", "_name_or_path"),
+        (Path("/twin/adapters"), "adapter_config.json", "base_model_name_or_path"),
+    )
     bad = []
-    for cfg in root.glob("*/config.json"):
-        data = json.loads(cfg.read_text())
-        name = data.get("_name_or_path", "")
-        if name and not (name.startswith("local://") or name.startswith("/twin")):
-            bad.append(f"{cfg}: _name_or_path={name!r}")
+    scanned = 0
+    for root, cfg_name, key in targets:
+        if not root.exists():
+            continue
+        for cfg in root.glob(f"*/{cfg_name}"):
+            scanned += 1
+            data = json.loads(cfg.read_text())
+            name = data.get(key, "")
+            if name and not (name.startswith("local://") or name.startswith("/twin")):
+                bad.append(f"{cfg}: {key}={name!r}")
+    if not scanned:
+        return True, "no /twin/checkpoints or /twin/adapters yet — nothing to validate"
     if bad:
-        return False, "hub-pointing _name_or_path (offline-load bug): " + "; ".join(bad)
+        return False, "hub-pointing model path (offline-load bug): " + "; ".join(bad)
     return True, "checkpoint configs are offline-safe"
 
 
