@@ -6,5 +6,6 @@
 !serving/
 !training/
 !docker/patches/
+!eval/
 **/__pycache__/
 **/*.pyc

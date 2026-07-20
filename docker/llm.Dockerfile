@@ -9,6 +9,11 @@ RUN pip install --no-cache-dir --pre vllm \
       --extra-index-url https://wheels.vllm.ai/nightly \
     && pip check | grep -v torch || true
 
+# eval harness deps (verify-persona runs in this container): exact pin +
+# --no-deps — the s-t 5.x line imports the NGC image's torchcodec (crashes on
+# missing ffmpeg libs) and an unpinned install could let pip touch the NGC torch
+RUN pip install --no-cache-dir --no-deps sentence-transformers==3.4.1
+
 # fail the BUILD (not first serve) if pip replaced the NGC torch with a CPU wheel
 RUN python -c "import torch; assert torch.version.cuda, 'pip clobbered the NGC torch with a CPU build'"
 
