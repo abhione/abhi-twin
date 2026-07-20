@@ -65,8 +65,8 @@ def persona(state: TwinState) -> TwinState:
     context = "\n\n".join(state.get("context_chunks", []))
     if context:
         system += (
-            "\n\nRetrieved context from Abhi's working notes — use it only when "
-            f"actually relevant to the question:\n<context>\n{context}\n</context>"
+            "\n\nRetrieved context from my working notes — use only when actually "
+            f"relevant to the question:\n<context>\n{context}\n</context>"
         )
     extra: dict[str, Any] = {}
     if state.get("want_voice"):
