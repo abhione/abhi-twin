@@ -1,4 +1,4 @@
-# AbhiTwin — Status (updated 2026-07-18 19:15 PT, Phase 2 launch attempt)
+# AbhiTwin — Status (updated 2026-07-19 ~18:10 PT, Phase 3: persona-v1 served + eval gate PASSED)
 
 Phase 0 (Spark bring-up) and Phase 1 (corpus) are done. All output below is
 real command output (trimmed).
@@ -257,17 +257,166 @@ Monitoring after launch: `brev ls` for the instance, `brev shell
 twin-train-persona-v1` for logs; the trainer prints `OK: pushed persona-v1 to
 hf.co/…` and reminds to terminate the instance.
 
+## Phase 3 — persona-v1 SERVED on the Spark + eval gate: PASSED (2026-07-19)
+
+Phase 2 completed between updates (H100 burst, 3 epochs, train loss ~1.25;
+adapter fetched to `/twin/adapters/persona-v1`). This session brought the core
+serving stack up on the Spark and ran the persona eval gate. All output below
+is real command output (trimmed).
+
+### 1. Downloads verified complete (Spark)
+
+- Base model `/twin/models/qwen2.5-72b-instruct-awq`: `du -sh` → **39G**;
+  scripted check of `model.safetensors.index.json` → `shards needed: 11
+  missing: []`. No `hf download` process running.
+- Adapter `/twin/adapters/persona-v1`: `adapter_model.safetensors`
+  (1,684,427,792 B), rank 32 / alpha 64 per `adapter_config.json`.
+- Holdout present: `/twin/corpus/out/eval.jsonl` + `holdout.manifest.json`.
+- `sentence-transformers/all-mpnet-base-v2` was **missing** → downloaded to
+  `/twin/models/all-mpnet-base-v2` (public model, hf CLI).
+
+### 2. Serve wiring fixes (committed `8841fb9`)
+
+- **`.env` never reached compose**: `docker compose -f docker/compose.yaml`
+  resolves `.env` relative to `docker/`, not the repo root — every `TWIN_*`
+  override was silently ignored. Fixed in the Makefile with
+  `--project-directory .`.
+- **`--max-lora-rank 32`**: persona LoRA is rank 32; vLLM's default cap is 16,
+  so the adapter would have failed to load. Added via a compose `command:`
+  override (no image rebuild needed).
+- **`--gpu-memory-utilization 0.42`** (`TWIN_GPU_MEM_UTIL`): GB10 unified
+  memory means vLLM's 0.9 default would target ~109 GB of the shared 121 GB;
+  0.42 ≈ the spec §2 50 GB LLM budget line. Post-load `free -g`: 60 GB used
+  of 121 — within budget.
+- Spark `.env` was writable → appended
+  `TWIN_LLM_MODEL_DIR=/twin/models/qwen2.5-72b-instruct-awq` and
+  `TWIN_PERSONA_ADAPTER=/twin/adapters/persona-v1`. Verified resolved via
+  `docker compose … config`.
+- `ci/preflight.py --check checkpoints` only scanned `/twin/checkpoints` and
+  would have missed the adapter gotcha → now also scans
+  `/twin/adapters/*/adapter_config.json` for hub-pointing base paths.
+
+### 3. Adapter `_name_or_path` gotcha — caught and patched
+
+```
+FAIL  checkpoints  hub-pointing model path (offline-load bug):
+      /twin/adapters/persona-v1/adapter_config.json:
+      base_model_name_or_path='Qwen/Qwen2.5-72B-Instruct'
+```
+
+Patched to `/twin/models/qwen2.5-72b-instruct-awq` (backup kept at
+`adapter_config.json.bak`) → re-run: `PASS checkpoints configs offline-safe`.
+
+### 4. `make serve` — core stack UP
+
+One conflict: the ad-hoc `twin-qdrant` container from the RAG ingest held port
+6333. Same image (`qdrant/qdrant:v1.12.4`) + same `/twin/qdrant` bind mount as
+the compose service, so it was stopped/removed and the compose-managed qdrant
+took over the same storage (1,888-point `brain` collection persists on disk).
+vLLM loaded the 72B AWQ in ~8.5 min; `curl :8000/v1/models` lists
+`persona-v1` + `qwen2.5-72b` (base aliases) **and** the LoRA entry with
+`root: /twin/adapters/persona-v1`. Containers: `abhi-twin-llm-1`,
+`abhi-twin-qdrant-1`, `abhi-twin-orchestrator-1` all Up.
+
+### 5. Smoke test (temp 0, "how do you feel about filler narration in agent replies?")
+
+**persona-v1** (178 completion tokens, finish `stop`):
+
+> I think filler narration in agent replies can be a double-edged sword. On one
+> hand, it can make the conversation feel more natural and human-like, which
+> can enhance the user experience. It can also provide context or set the tone
+> for the interaction.
+>
+> On the other hand, too much filler can make the responses seem less direct
+> and efficient, which might frustrate users who are looking for quick, precise
+> answers. It's important to strike a balance between making the conversation
+> engaging and ensuring that the information is delivered clearly and
+> concisely. […]
+
+**qwen2.5-72b base** (259 completion tokens, finish `stop`):
+
+> As an AI language model, I don't have personal feelings or emotions, but I
+> can provide an objective perspective on the use of filler narration in agent
+> replies.
+>
+> Filler narration, such as "Let me think for a moment" or "I'm just checking
+> that," can serve several purposes in agent replies:
+>
+> 1. **Humanization**: It can make the interaction feel more natural […]
+
+Outputs differ at temperature 0 (and PPL differs ~6× below), proving the LoRA
+name wins routing over the identically-named base alias. Cosmetic quirk: the
+response `model` echo field says `persona-v1` for both requests (vLLM echoes
+the primary served name); route by request `model`, not the echo.
+
+### 6. Eval gate — `make verify-persona`: **PASSED**
+
+`eval/persona.py` had a dead `gate_ppl_pct` param (PPL was never computed).
+Implemented held-out reply-only PPL via vLLM's `prompt_logprobs` extension
+against both model names, chat-templated with the serving tokenizer
+(committed `1f0cef8`). The LLM judge is the local vLLM base model
+(`qwen2.5-72b`), order-swapped A/B, n=30 from the frozen holdout.
+
+```
+{
+  "ab_indistinguishable": 0.7333333333333333,
+  "style_cosine": 0.26130561394738133,
+  "boilerplate_rate": 0.0,
+  "ppl_base": 148.6741954647929,
+  "ppl_persona": 25.484387629945555,
+  "ppl_within_pct": true,
+  "n": 30
+}
+=== verify-persona: PASSED ===
+```
+
+| gate | threshold | value | verdict |
+|---|---|---|---|
+| blind A/B indistinguishable | ≥ 30% | **73.3%** | PASS |
+| held-out PPL vs base | within +15% | **25.48 vs 148.67** (0.17×) | PASS |
+| boilerplate rate | ≤ 5% | **0.0%** | PASS |
+| style cosine (informational, no gate) | — | 0.261 | n/a |
+
+Notes on the numbers: `ppl_base` 148.7 is high because the holdout is
+idiosyncratic personal-message text the vanilla model has never seen;
+persona-v1 at 25.5 is the trained-in adaptation, far inside the 15% band.
+The 73.3% A/B rate counts judge said "indistinguishable" *or* picked the
+twin's slot as the human; a same-family judge (Qwen judging Qwen outputs) may
+inflate this — worth re-running with an external judge before Phase 5's 40%
+gate, but the 30% Phase-2/3 gate clears with 2.4× margin. Style cosine 0.261
+(mpnet) is modest — real replies are short/informal, twin replies run longer;
+no gate is defined on it.
+
+### 7. Deviations / operational notes
+
+- `verify-persona` now runs **inside the llm container**
+  (`compose exec llm python eval/persona.py --gate`): the eval needs NGC
+  torch + the vLLM endpoint + `/twin`. `docker/llm.Dockerfile` now
+  `COPY eval/ eval/`; since the built image predates that, `eval/` was
+  `docker cp`'d in for this run. **On next llm image rebuild the cp step
+  disappears.**
+- `sentence-transformers` pinned to **3.4.1** in the container, installed
+  `--no-deps` (deps already in the NGC image; the 5.x line imports the NGC
+  image's torchcodec, which crashes on missing ffmpeg libs — and unpinned
+  pip would risk clobbering the NGC torch). Not yet baked into the
+  Dockerfile — add `pip install --no-deps sentence-transformers==3.4.1` on
+  next rebuild.
+- Raw smoke JSONs archived on the Spark and Mac at `/tmp/smoke_persona-v1.json`,
+  `/tmp/smoke_qwen2.5-72b.json`; gate log at `/tmp/verify-persona.log`.
+- Spark repo clone is clean (all edits shipped via git from the Mac); the only
+  Spark-side mutations were `.env` additions, the adapter patch (with `.bak`),
+  and the qdrant container swap.
+
 ## Next actions for Abhi (human-blocked)
 
-- [ ] **`brev login` on the Mac (browser SSO)** — every stored Brev credential
-      expired 2026-07-18 17:24 PT; nothing launches until this happens.
-- [ ] **GH PAT with `write:packages`** → build+push
-      `ghcr.io/abhione/abhi-twin-train:latest` (one command, see above).
-- [ ] Add `HF_CORPUS_REPO=abhione/abhi-twin-corpus` to `.env` (Mac + Spark) —
-      this session couldn't write `.env` (permission-protected).
-- [ ] `huggingface-cli login` on the Spark — required before model downloads
-      (Qwen 72B NVFP4, TTS base).
 - [ ] Optional: Gmail Takeout download → `twin corpus --local --mbox …` adds
       Abhi's long-form mail voice to the corpus (then rebuild + re-sync).
 - [ ] Voice recording session per `scripts/record_corpus.md` (mic setup,
-      Harvard sentences, identity video shot list) — feeds Phase 3.
+      Harvard sentences, identity video shot list) — feeds the voice phase.
+- [ ] Optional (recommended): rebuild the llm image
+      (`docker compose --project-directory . -f docker/compose.yaml build llm`)
+      to bake in `eval/` — until then re-runs of `make verify-persona` on a
+      fresh container need the `docker cp` + `pip install --no-deps
+      sentence-transformers==3.4.1` steps from §7 above.
+- [ ] Optional: re-run the A/B with a non-Qwen external judge to sanity-check
+      the 73.3% before trusting it against Phase 5's 40% bar.
