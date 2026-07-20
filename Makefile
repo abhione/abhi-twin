@@ -69,7 +69,7 @@ fetch-adapters: ## [spark] hf download trained adapters/checkpoints into /twin
 	bash training/burst/fetch_adapter.sh
 
 verify-persona: ## [spark] gate: blind A/B >=30% indistinguishable, PPL within 15%
-	$(PY) eval/persona.py --gate
+	$(COMPOSE) exec llm python eval/persona.py --gate
 
 verify-voice: ## [spark] gate: RTF < 1.5x, 10s synth with no NaN in mel
 	$(PY) eval/voice.py --gate

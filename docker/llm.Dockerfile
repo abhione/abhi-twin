@@ -16,6 +16,9 @@ WORKDIR /app
 COPY ci/ ci/
 COPY serving/ serving/
 COPY training/configs/ training/configs/
+# eval harness runs inside this container (make verify-persona): it needs the
+# NGC torch, the vLLM endpoint on localhost, and the /twin volume
+COPY eval/ eval/
 
 # serve the NVFP4-quantized merge with the persona LoRA hot-loadable
 # (Hermes Agent playbook pattern). Model + adapter live on the /twin volume.

@@ -96,16 +96,60 @@ def style_cosine(twin_vecs: list[list[float]], real_vecs: list[list[float]]) -> 
 # ------------------------------------------------------------- spark runners
 
 
+def _held_out_ppl(llm, model: str, prompt_texts: list[str], reply_texts: list[str]) -> float:
+    """Reply-only perplexity over the holdout via vLLM's prompt_logprobs extension
+    (no logits access needed — works against the OpenAI-compatible endpoint, LoRA
+    adapters included). Two calls per sample: the prompt-only call gives the token
+    boundary, the full call gives per-token logprobs for the gold reply."""
+    import math
+
+    total_lp, total_tok = 0.0, 0
+    for prompt, reply in zip(prompt_texts, reply_texts):
+        n_prompt = len(
+            llm.completions.create(
+                model=model, prompt=prompt, max_tokens=1, temperature=0,
+                extra_body={"prompt_logprobs": 0},
+            ).choices[0].prompt_logprobs
+        )
+        full = llm.completions.create(
+            model=model, prompt=prompt + reply, max_tokens=1, temperature=0,
+            extra_body={"prompt_logprobs": 0},
+        )
+        for entry in full.choices[0].prompt_logprobs[n_prompt:]:
+            if not entry:  # first token of a sequence has no logprob
+                continue
+            total_lp += next(iter(entry.values()))["logprob"]
+            total_tok += 1
+    return math.exp(-total_lp / total_tok) if total_tok else float("inf")
+
+
 def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float) -> dict:
     """The full harness — LLM judge, embeddings, PPL. Heavy imports live here."""
+    import os
+
     import torch  # noqa: F401  (asserts the NGC build is present)
     from openai import OpenAI
     from sentence_transformers import SentenceTransformer
+    from transformers import AutoTokenizer
 
     llm = OpenAI(base_url="http://localhost:8000/v1", api_key="local")
     samples = [json.loads(x) for x in eval_path.open() if x.strip()][:n_ab]
     prompts = [s["messages"][-2]["content"] for s in samples]
     real = [s["messages"][-1]["content"] for s in samples]
+
+    # PPL is measured on chat-templated text — the distribution the LoRA was
+    # trained on — using the serving tokenizer for exact token boundaries.
+    model_dir = os.environ.get("TWIN_LLM_MODEL_DIR", "/twin/models/qwen2.5-72b-instruct-awq")
+    tok = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
+    prompt_texts = [
+        tok.apply_chat_template(
+            [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True
+        )
+        for p in prompts
+    ]
+    reply_texts = [r + tok.eos_token for r in real]
+    ppl_base = _held_out_ppl(llm, "qwen2.5-72b", prompt_texts, reply_texts)
+    ppl_persona = _held_out_ppl(llm, "persona-v1", prompt_texts, reply_texts)
 
     twin = []
     for p in prompts:
@@ -134,6 +178,9 @@ def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float)
             embedder.encode(twin).tolist(), embedder.encode(real).tolist()
         ),
         "boilerplate_rate": boilerplate_rate(twin),
+        "ppl_base": ppl_base,
+        "ppl_persona": ppl_persona,
+        "ppl_within_pct": within_pct(ppl_persona, ppl_base, gate_ppl_pct),
         "n": len(pairs),
     }
 
@@ -156,7 +203,8 @@ def main(eval_file: Path, n_ab: int, gate: bool, gate_ab: float,
     click.echo(json.dumps(results, indent=2))
     if gate:
         ok = (results["ab_indistinguishable"] >= gate_ab
-              and results["boilerplate_rate"] <= gate_boilerplate)
+              and results["boilerplate_rate"] <= gate_boilerplate
+              and results["ppl_within_pct"])
         click.echo("=== verify-persona: PASSED ===" if ok else "=== verify-persona: FAILED ===")
         sys.exit(0 if ok else 1)
 
