@@ -69,10 +69,17 @@ fetch-adapters: ## [spark] hf download trained adapters/checkpoints into /twin
 	bash training/burst/fetch_adapter.sh
 
 verify-persona: ## [spark] gate: blind A/B >=30% indistinguishable, PPL within 15%
-	$(COMPOSE) exec llm python eval/persona.py --gate
+	$(COMPOSE) exec llm python eval/persona.py --gate --pairs-out /twin/eval/ab_pairs.json
 
-verify-voice: ## [spark] gate: RTF < 1.5x, 10s synth with no NaN in mel
-	$(PY) eval/voice.py --gate
+# reuses the exact pairs persisted by verify-persona (rsync them over first);
+# billing note: judge_claude_cli strips ANTHROPIC_API_KEY so the CLI uses the sub
+PAIRS_FILE ?= /tmp/ab_pairs.json
+verify-persona-external: setup ## [mac] re-judge the persisted A/B pairs with a non-Qwen judge (claude CLI)
+	$(PY) eval/persona.py --judge claude-cli --pairs-file $(PAIRS_FILE) \
+	  --claude-bin $(HOME)/.claude-latest/node_modules/.bin/claude
+
+verify-voice: ## [spark] gate: RTF < 1.5x through the live TTS endpoint, finite non-silent PCM
+	$(COMPOSE) exec tts python eval/voice.py --gate
 
 # ---------------------------------------------------------------- phase 4: serving
 serve: ## [spark] core stack: LLM + Qdrant + orchestrator
@@ -87,7 +94,7 @@ serve-all: ## [spark] + MuseTalk video (lazy-loads weights on first session)
 serve-down: ## [spark] stop the stack
 	$(COMPOSE) --profile core --profile voice --profile video down
 
-verify-e2e: ## [spark] gate: voice round trip < 3 s
+verify-e2e: setup ## [spark] gate: voice round trip < 3 s
 	$(PY) scripts/e2e_roundtrip.py --gate
 
 # ---------------------------------------------------------------- v1.5: video
@@ -109,5 +116,6 @@ clean: ## [mac] remove venv + caches (never touches corpus data)
 
 .PHONY: help setup lint test-local phase0 verify-phase0 corpus verify-corpus corpus-sync \
         corpus-upload train-persona train-voice train-musetalk fetch-adapters verify-persona \
-        verify-voice serve serve-voice serve-all serve-down verify-e2e video video-demo \
+        verify-persona-external verify-voice serve serve-voice serve-all serve-down verify-e2e \
+        video video-demo \
         verify-video preflight clean

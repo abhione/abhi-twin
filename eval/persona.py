@@ -93,6 +93,30 @@ def style_cosine(twin_vecs: list[list[float]], real_vecs: list[list[float]]) -> 
     return sum(sims) / len(sims) if sims else 0.0
 
 
+# ------------------------------------------------------------- external judge
+
+
+def judge_claude_cli(prompts: list[str], pairs: list[dict], claude_bin: str,
+                     claude_model: str) -> list[str]:
+    """Re-judge persisted A/B pairs with a non-Qwen judge via the local claude
+    CLI (one call per pair). Runs on the Mac — no GPU/serving stack needed.
+    `env -u ANTHROPIC_API_KEY` is load-bearing: the CLI must bill the Max
+    subscription, never the API key that may be exported in the shell."""
+    import subprocess
+
+    judgments = []
+    for i, (prompt, pair) in enumerate(zip(prompts, pairs), 1):
+        content = f"{JUDGE_INSTRUCTION}\n\nPrompt:\n{prompt}\n\nA:\n{pair['A']}\n\nB:\n{pair['B']}"
+        out = subprocess.run(
+            ["env", "-u", "ANTHROPIC_API_KEY", claude_bin, "-p", "--model", claude_model],
+            input=content, capture_output=True, text=True, timeout=600, check=True,
+        ).stdout.strip()
+        judgments.append(out)
+        click.echo(f"  [{i}/{len(pairs)}] {out.splitlines()[0][:40] if out else '(empty)'}",
+                   err=True)
+    return judgments
+
+
 # ------------------------------------------------------------- spark runners
 
 
@@ -123,7 +147,8 @@ def _held_out_ppl(llm, model: str, prompt_texts: list[str], reply_texts: list[st
     return math.exp(-total_lp / total_tok) if total_tok else float("inf")
 
 
-def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float) -> dict:
+def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float,
+                pairs_out: Path | None = None) -> dict:
     """The full harness — LLM judge, embeddings, PPL. Heavy imports live here."""
     import os
 
@@ -171,6 +196,14 @@ def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float)
         )
         judgments.append(resp.choices[0].message.content)
 
+    if pairs_out:
+        # persist the exact pairs + judgments so an external judge (--judge
+        # claude-cli on the Mac) can re-score the SAME order-swapped pairs
+        pairs_out.parent.mkdir(parents=True, exist_ok=True)
+        pairs_out.write_text(json.dumps(
+            {"seed": 7, "n": len(pairs), "prompts": prompts, "pairs": pairs,
+             "judge": "qwen2.5-72b", "judgments": judgments}, indent=2))
+
     embedder = SentenceTransformer("/twin/models/all-mpnet-base-v2", local_files_only=True)
     return {
         "ab_indistinguishable": indistinguishable_rate(judgments, pairs),
@@ -192,14 +225,43 @@ def _spark_eval(eval_path: Path, n_ab: int, gate_ab: float, gate_ppl_pct: float)
 @click.option("--gate", is_flag=True, help="exit non-zero if gates unmet")
 @click.option("--gate-ab", default=0.30, show_default=True)
 @click.option("--gate-boilerplate", default=0.05, show_default=True)
+@click.option("--judge", type=click.Choice(["qwen", "claude-cli"]), default="qwen",
+              show_default=True, help="qwen = local vLLM base model (spark); "
+              "claude-cli = external non-Qwen judge over persisted pairs (mac)")
+@click.option("--pairs-out", type=click.Path(path_type=Path), default=None,
+              help="[qwen judge] persist A/B pairs + judgments here for re-judging")
+@click.option("--pairs-file", type=click.Path(exists=True, path_type=Path), default=None,
+              help="[claude-cli judge] pairs JSON persisted by a --pairs-out run")
+@click.option("--claude-bin", default="claude", show_default=True)
+@click.option("--claude-model", default="claude-haiku-4-5-20251001", show_default=True)
 def main(eval_file: Path, n_ab: int, gate: bool, gate_ab: float,
-         gate_boilerplate: float) -> None:
+         gate_boilerplate: float, judge: str, pairs_out: Path | None,
+         pairs_file: Path | None, claude_bin: str, claude_model: str) -> None:
+    if judge == "claude-cli":
+        if pairs_file is None:
+            raise click.UsageError("--judge claude-cli needs --pairs-file "
+                                   "(persisted by a spark run with --pairs-out)")
+        data = json.loads(pairs_file.read_text())
+        judgments = judge_claude_cli(data["prompts"], data["pairs"], claude_bin, claude_model)
+        results = {
+            "judge": f"claude-cli:{claude_model}",
+            "ab_indistinguishable": indistinguishable_rate(judgments, data["pairs"]),
+            "n": len(data["pairs"]),
+            "self_judge_ab": indistinguishable_rate(data.get("judgments", []), data["pairs"]),
+        }
+        click.echo(json.dumps(results, indent=2))
+        if gate:
+            ok = results["ab_indistinguishable"] >= gate_ab
+            click.echo("=== verify-persona (external judge): PASSED ===" if ok
+                       else "=== verify-persona (external judge): FAILED ===")
+            sys.exit(0 if ok else 1)
+        return
     try:
         import torch  # noqa: F401
     except ImportError:
         click.echo("=== RUN ON SPARK === eval/persona.py needs the serving stack + GPU.")
         sys.exit(2)
-    results = _spark_eval(eval_file, n_ab, gate_ab, 15.0)
+    results = _spark_eval(eval_file, n_ab, gate_ab, 15.0, pairs_out)
     click.echo(json.dumps(results, indent=2))
     if gate:
         ok = (results["ab_indistinguishable"] >= gate_ab

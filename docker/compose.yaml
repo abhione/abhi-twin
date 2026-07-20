@@ -72,6 +72,12 @@ services:
     volumes: *twin-volumes
     gpus: all
     mem_limit: 5g             # Milo voice TTS budget line
+    environment:
+      # until voice-v1 is trained, point this at the base CustomVoice model dir
+      # (e.g. /twin/models/qwen3-tts-12hz-1.7b-customvoice) via the repo-root .env
+      - TWIN_VOICE_CHECKPOINT=${TWIN_VOICE_CHECKPOINT:-/twin/checkpoints/voice-v1}
+      - TWIN_TTS_SPEAKER=${TWIN_TTS_SPEAKER:-Ryan}
+      - TWIN_TTS_LANGUAGE=${TWIN_TTS_LANGUAGE:-English}
     restart: unless-stopped
 
   stt:
