@@ -521,6 +521,64 @@ Spark clone pulled to `0865457`, working tree clean. The eval parsing fix does
 not alter recorded gate numbers (all 30 Qwen self-judge verdicts were already
 exact single tokens — verified from the persisted pairs file).
 
+## Soul + memory architecture — DEPLOYED + VERIFIED (2026-07-19, third session)
+
+Hermes-style identity/memory for the twin (`b0ce199`): `serving/soul/`
+{SOUL,FACTS,MEMORY}.md (runtime copies hot-editable at `/twin/soul`, repo
+copies bundled in the image as fallback), mtime-cached `loader.py` (MEMORY
+tail capped at 4000 chars), per-session history in WAL SQLite at
+`/twin/soul/sessions.db` (`memory.py`, last-12-message window), orchestrator
+endpoints `/session/clear` `/memory/append` `/soul/identity`, Telegram relay
+commands `/new` `/whoami` `/remember` + per-chat session `tg-<chat_id>`.
+`make soul-sync` pushes SOUL/FACTS always, MEMORY.md only if absent.
+Orchestrator image rebuilt on the Spark, container recreated, `twin-telegram`
+restarted; vLLM untouched. `make test-local`: ruff clean, 115 tests pass.
+
+### E2E verification over the live /chat (raw curl outputs)
+
+Same-session memory (`soultest-1`):
+
+```
+> {"text": "my favorite F1 team is McLaren", "session": "soultest-1"}
+{"reply":"McLaren is a classic. The heritage is unmatched. Who's your favorite driver?","route":"casual","audio_b64":null}
+> {"text": "what is my favorite F1 team?", "session": "soultest-1"}
+{"reply":"Your favorite F1 team is McLaren.","route":"casual","audio_b64":null}       PASS
+```
+
+Cross-session isolation (`soultest-2`, same question):
+
+```
+{"reply":"I don't know. What's your favorite F1 team?","route":"casual","audio_b64":null}   PASS
+```
+
+Bio grounding (`soultest-3`, "where did you work before VSP?") — only
+FACTS.md entities (Prosource IT, healthcare/health-tech AI), defers on
+specifics, nothing invented:
+
+```
+{"reply":"Before VSP, I worked at Prosource IT, the staffing company I founded. I've also had roles in healthcare and health-tech AI, but the specifics of those positions are a bit fuzzy to me. If you need exact dates and titles, I'd have to defer to the real Abhi.","route":"casual","audio_b64":null}   PASS
+```
+
+Style: no em dashes, no AI-isms in any reply above. PASS.
+
+/remember path (`POST /memory/append`, the relay's exact call) + hot reload
+(no restart between append and recall):
+
+```
+{"appended":"- [2026-07-20 05:19] The current soul-stack verification codeword is BLUE-FALCON."}
+> fresh session: {"text": "what is the soul-stack verification codeword?", "session": "soultest-4"}
+{"reply":"The current soul-stack verification codeword is BLUE-FALCON.","route":"casual","audio_b64":null}   PASS
+```
+
+/new path (`POST /session/clear`): `{"cleared":4}` on `soultest-1`, after
+which the same session answers "I don't know your favorite F1 team. Abhi is a
+Formula 1 fan, but I don't have that information about you." PASS.
+
+Test residue cleaned: BLUE-FALCON line removed from `/twin/soul/MEMORY.md`,
+all `soultest-*` sessions cleared. Note: `/remember` timestamps are UTC
+(container tz). Spark clone at the same head; the pre-existing untracked
+relay copy was parked at `/tmp/telegram_relay.py.pre-soul.bak`.
+
 ## Next actions for Abhi (human-blocked)
 
 - [ ] Optional: Gmail Takeout download → `twin corpus --local --mbox …` adds
